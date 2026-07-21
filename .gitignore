@@ -1,0 +1,63 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Environment & secrets ─────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+backend/credentials.json
+backend/token.json
+
+# ── Runtime state ─────────────────────────────────────────────────────────────
+# User-specific config written by backend at runtime
+backend/ultron_config.json
+# Test run artifacts
+backend/tests/last_run_results.json
+
+# ── Piper TTS — large binaries & model files (download separately) ────────────
+backend/piper_models/
+
+# ── Generated audio ───────────────────────────────────────────────────────────
+*.wav
+*.mp3
+
+# ── Node / Next.js ───────────────────────────────────────────────────────────
+node_modules/
+.next/
+frontend/out/
+frontend/dist/
+frontend/build/
+
+# ── Electron build output ─────────────────────────────────────────────────────
+frontend/dist-electron/
+frontend/release/
+
+# ── TypeScript build cache ────────────────────────────────────────────────────
+tsconfig.tsbuildinfo
+
+# ── v0 / Vercel internal ──────────────────────────────────────────────────────
+__v0_runtime_loader.js
+__v0_devtools.tsx
+__v0_jsx-dev-runtime.ts
+.snowflake/
+.v0-trash/
+.vercel/
+next.user-config.*
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/

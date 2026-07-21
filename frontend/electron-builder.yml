@@ -1,0 +1,25 @@
+appId: com.ultron.assistant
+productName: Ultron
+copyright: Personal Project
+
+directories:
+  output: dist
+  buildResources: assets
+
+files:
+  - dist-electron/**/*
+  - out/**/*
+  - package.json
+
+mac:
+  category: public.app-category.productivity
+  target: dmg
+  icon: assets/icon.icns
+
+win:
+  target: nsis
+  icon: assets/icon.ico
+
+linux:
+  target: AppImage
+  icon: assets/icon.png

@@ -1,0 +1,40 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+python-multipart==0.0.12
+pydantic==2.9.2
+python-dotenv==1.0.1
+anthropic==0.40.0
+langchain==0.3.7
+langchain-community==0.3.7
+langgraph==0.2.50
+ollama==0.3.3
+faster-whisper==1.0.3
+openwakeword==0.6.0
+# piper-tts Python package does NOT support Python 3.11+ on Windows.
+# Install the standalone piper binary instead — see README "Piper TTS" section.
+# The tts.py module calls piper as a subprocess, so no Python package is needed.
+elevenlabs==1.9.0
+opencv-python==4.10.0.84
+mediapipe==0.10.18
+# face-recognition requires dlib which needs CMake + MSVC build tools on Windows.
+# Optional — camera passive monitoring runs without it (face ID is skipped).
+# To install manually: pip install cmake then pip install face-recognition
+mss==9.0.2
+pygetwindow==0.0.9
+psutil==6.1.0
+easyocr==1.7.2
+pytesseract==0.3.13
+pyautogui==0.9.54
+tavily-python==0.5.0
+google-api-python-client==2.154.0
+google-auth-httplib2==0.2.0
+google-auth-oauthlib==1.2.1
+dateparser==1.2.0
+pillow==11.0.0
+numpy==1.26.4
+httpx==0.27.2
+websockets==13.1
+sounddevice==0.5.1
+soundfile==0.12.1
+scipy==1.14.1
+langdetect==1.0.9
