@@ -237,6 +237,7 @@ from api.routes.smart_home import router as smart_home_router
 from api.routes.calendar import router as calendar_router
 from api.routes.status import router as status_router
 from api.routes.controls import router as controls_router
+from api.routes.weather import router as weather_router
 from api.websocket import router as ws_router
 
 app.include_router(chat_router)
@@ -247,6 +248,7 @@ app.include_router(smart_home_router)
 app.include_router(calendar_router)
 app.include_router(status_router)
 app.include_router(controls_router)
+app.include_router(weather_router)
 app.include_router(ws_router)
 
 

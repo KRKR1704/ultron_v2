@@ -184,12 +184,10 @@ async def _process_text(ws: WebSocket, text: str, session_id: str = "ws-session"
 
     cfg = app_state["config"]
     mode = cfg.get("mode", "professional")
-    config_language = cfg.get("language", "en")
     user_name = cfg.get("user_name", "sir")
 
-    # Detect language from text
-    detected = detect_language_from_text(text)
-    language = detected if detected != "en" else config_language
+    # Detect language from text — session-aware (see multilingual/language_detector.py)
+    language = detect_language_from_text(text, session_id=session_id)
 
     try:
         await ws.send_json({"type": "transcript", "text": text})

@@ -18,7 +18,7 @@ _SYSTEM = platform.system()  # "Windows", "Darwin", "Linux"
 # Each entry is (windows_cmd, mac_cmd, linux_cmd)
 # None means not available on that platform.
 
-_APP_MAP: dict[str, tuple[Optional[str], Optional[str], Optional[str]]] = {
+APP_MAP: dict[str, tuple[Optional[str], Optional[str], Optional[str]]] = {
     "vscode":    ("code",                 "code",              "code"),
     "vs code":   ("code",                 "code",              "code"),
     "visual studio code": ("code",        "code",              "code"),
@@ -51,7 +51,7 @@ _APP_MAP: dict[str, tuple[Optional[str], Optional[str], Optional[str]]] = {
 
 def _resolve_command(app_key: str) -> Optional[str]:
     """Return the platform-specific command string for an app key."""
-    entry = _APP_MAP.get(app_key.lower())
+    entry = APP_MAP.get(app_key.lower())
     if not entry:
         return None
     win_cmd, mac_cmd, linux_cmd = entry
@@ -124,7 +124,7 @@ def open_app_from_command(command: str) -> str:
     lower = command.lower()
 
     # Try each known app name in order from longest to shortest (greedy match)
-    sorted_keys = sorted(_APP_MAP.keys(), key=len, reverse=True)
+    sorted_keys = sorted(APP_MAP.keys(), key=len, reverse=True)
     for key in sorted_keys:
         if key in lower:
             return open_app(key)

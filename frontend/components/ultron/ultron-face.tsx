@@ -1,5 +1,9 @@
 'use client'
 
+// Unused — richer alternate face renderer with full FaceState parity
+// (including dormant/waking), candidate to swap in for ultron-robot.tsx
+// later. Kept intentionally, not dead code to be deleted.
+
 import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 

@@ -30,14 +30,37 @@ async def voice(request: Request):
 
     # ── Parse payload ─────────────────────────────────────────────────────────
     if "multipart/form-data" in content_type:
-        form = await request.form()
-        audio_file: UploadFile = form.get("audio")  # type: ignore[assignment]
-        session_id = form.get("session_id", "default")
-        audio_bytes = await audio_file.read() if audio_file else b""
+        try:
+            form = await request.form()
+            audio_file: UploadFile = form.get("audio")  # type: ignore[assignment]
+            session_id = form.get("session_id", "default")
+            audio_bytes = await audio_file.read() if audio_file else b""
+        except Exception as parse_err:
+            log.error("/voice multipart parse error: %s", parse_err)
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": str(parse_err),
+                    "hint": "Expected multipart/form-data with an 'audio' file field "
+                    "and optional 'session_id' field.",
+                },
+            )
         stt_result = transcribe_bytes(audio_bytes)
     else:
-        body = await request.json()
-        req = VoiceRequest(**body)
+        try:
+            body = await request.json()
+            req = VoiceRequest(**body)
+        except Exception as parse_err:
+            raw = await request.body()
+            log.error("/voice parse error — raw body: %s | error: %s", raw[:500], parse_err)
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": str(parse_err),
+                    "hint": 'Expected JSON body: {"audio_base64": string, "session_id": string}',
+                    "received": str(raw[:500]),
+                },
+            )
         stt_result = transcribe_base64(req.audio_base64)
         session_id = req.session_id
 

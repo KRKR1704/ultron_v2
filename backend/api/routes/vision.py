@@ -80,7 +80,7 @@ async def vision_camera(request: VisionRequest):
         if not frame_b64:
             analysis = "I was unable to access the camera."
         else:
-            ocr_text = extract_text(frame_b64)
+            ocr_text = extract_text(frame_b64, language_code=language)
             analysis = await analyze(
                 image_b64=frame_b64,
                 question=request.question,
@@ -123,7 +123,7 @@ async def vision_screen(request: VisionRequest):
         if not screen_b64:
             analysis = "I was unable to capture the screen."
         else:
-            ocr_text = extract_text(screen_b64)
+            ocr_text = extract_text(screen_b64, language_code=language)
             context = _detect_context(ocr_text)
             analysis = await analyze(
                 image_b64=screen_b64,

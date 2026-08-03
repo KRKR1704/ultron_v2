@@ -60,18 +60,20 @@ def test_mode_switch_then_chat_uses_new_mode(client):
     1. Switch to casual mode via /mode
     2. Send a /chat request
     3. Verify the chat response reflects 'casual' mode
+
+    Note: /mode does not call an LLM ("brain") — it picks a hardcoded
+    confirmation line and only needs `synthesize` mocked (see
+    api/routes/mode.py and tests/test_07_mode.py for the full explanation).
     """
     # Step 1: Switch to casual
-    with patch("api.routes.mode.brain") as mock_brain, \
-         patch("api.routes.mode.synthesize", new_callable=AsyncMock) as mock_tts:
-        mock_brain.generate = AsyncMock(return_value="Casual mode on!")
+    with patch("api.routes.mode.synthesize", new_callable=AsyncMock) as mock_tts:
         mock_tts.return_value = ""
         mode_resp = _post_mode(client, "casual")
 
     assert mode_resp.status_code == 200
     assert app_state["config"]["mode"] == "casual"
 
-    # Step 2: Chat
+    # Step 2: Chat — must reflect the mode switched in Step 1
     session = "integration-mode-switch"
     memory.clear_session(session)
 
@@ -83,12 +85,15 @@ def test_mode_switch_then_chat_uses_new_mode(client):
         chat_resp = _post_chat(client, "Tell me a joke", session)
 
     assert chat_resp.status_code == 200
-    assert chat_resp.json()["mode"] == "casual"
+    chat_data = chat_resp.json()
+    assert chat_data["mode"] == "casual"
+    # run_agent must actually have been invoked with the new mode, not just
+    # have the response happen to say "casual" for an unrelated reason.
+    assert mock_agent.call_args.kwargs.get("mode") == "casual"
+    assert chat_data["response_text"] == "Hey! What's up?"
 
     # Restore
-    with patch("api.routes.mode.brain") as mock_brain, \
-         patch("api.routes.mode.synthesize", new_callable=AsyncMock) as mock_tts:
-        mock_brain.generate = AsyncMock(return_value="Professional mode on.")
+    with patch("api.routes.mode.synthesize", new_callable=AsyncMock) as mock_tts:
         mock_tts.return_value = ""
         _post_mode(client, "professional")
 
@@ -207,9 +212,7 @@ def test_mode_persists_after_config_reload(client):
 
     try:
         with _patch("main._CONFIG_PATH", tmp_path), \
-             _patch("api.routes.mode.brain") as mock_brain, \
              _patch("api.routes.mode.synthesize", new_callable=AsyncMock) as mock_tts:
-            mock_brain.generate = AsyncMock(return_value="Casual mode activated.")
             mock_tts.return_value = ""
 
             # Switch to casual — this calls save_config
@@ -237,17 +240,37 @@ def test_health_check_always_200(client):
 
 @pytest.mark.slow
 def test_status_reflects_config_mode(client):
-    """GET /status must reflect the current app_state mode."""
+    """
+    GET /status must reflect the current app_state mode AND the real
+    camera/screen/wake-word active states.
+
+    api/routes/status.py imports camera_capture, screen_capture, and
+    wake_word_detector LOCALLY inside the status() function body
+    (`from vision.camera import camera_capture`, etc.) rather than at
+    module level. That import statement re-executes on every call, so
+    patching the *source* modules (vision.camera, vision.screen,
+    voice.wake_word) — not api.routes.status, which never actually binds
+    these names at module scope — is what makes the mock take effect.
+
+    Non-uniform mock values (True/False/True rather than all-False) are
+    used deliberately so this test can't pass by accident if a future
+    change wired one field to the wrong source, or hardcoded a value.
+    """
     app_state["config"]["mode"] = "casual"
 
-    with patch("api.routes.status.camera_capture") as mock_cam, \
-         patch("api.routes.status.screen_capture") as mock_screen, \
-         patch("api.routes.status.wake_word_detector") as mock_wwd:
-        mock_cam.is_active = False
+    with patch("vision.camera.camera_capture") as mock_cam, \
+         patch("vision.screen.screen_capture") as mock_screen, \
+         patch("voice.wake_word.wake_word_detector") as mock_wwd:
+        mock_cam.is_active = True
         mock_screen.is_active = False
-        mock_wwd.is_active = False
+        mock_wwd.is_active = True
 
         resp = client.get("/status")
 
-    assert resp.json()["mode"] == "casual"
+    data = resp.json()
+    assert data["mode"] == "casual"
+    assert data["camera_active"] is True
+    assert data["screen_active"] is False
+    assert data["wake_word_active"] is True
+
     app_state["config"]["mode"] = "professional"

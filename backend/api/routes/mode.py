@@ -73,8 +73,17 @@ async def switch_mode(request: ModeRequest):
     lines = _PROFESSIONAL_LINES if mode == "professional" else _CASUAL_LINES
     confirmation_text = random.choice(lines)
 
-    # First call synthesises; repeated switches hit the in-memory cache
-    confirmation_audio = await _get_confirmation_audio(confirmation_text, language)
+    # First call synthesises; repeated switches hit the in-memory cache.
+    # The mode switch itself (config + memory) has already succeeded above —
+    # a TTS failure here must not turn that into a hard failure. Mirrors
+    # /chat's graceful-degradation pattern (api/routes/chat.py): fall back to
+    # empty audio and still return 200, rather than letting main.py's global
+    # exception handler turn this into a raw 500.
+    try:
+        confirmation_audio = await _get_confirmation_audio(confirmation_text, language)
+    except Exception as err:
+        log.error("/mode confirmation audio synthesis failed: %s", err, exc_info=True)
+        confirmation_audio = ""
 
     return ModeResponse(
         success=True,

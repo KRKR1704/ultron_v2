@@ -7,6 +7,7 @@ Always returns audio as a base64-encoded string — never writes to disk.
 
 import base64
 import io
+import json
 import logging
 import os
 import subprocess
@@ -23,6 +24,11 @@ log = logging.getLogger(__name__)
 
 _PIPER_MODELS_PATH  = Path(os.getenv("PIPER_MODELS_PATH", "./piper_models"))
 _ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+
+# Fallback used only if a voice's .onnx.json is missing/malformed — every
+# voice model actually shipped in piper_models/ today declares its own real
+# rate (see _get_sample_rate()), so this default should rarely, if ever, fire.
+_DEFAULT_SAMPLE_RATE = 22050
 
 # Resolved once at first use — never search PATH repeatedly
 _piper_cmd_cache: Optional[str] = None
@@ -89,9 +95,22 @@ async def synthesize(text: str, language_code: str = "en") -> str:
             audio_b64 = _synthesize_elevenlabs(text, route.voice)
             if audio_b64:
                 return audio_b64
-            # Fall through to piper English if ElevenLabs fails
+            # No piper voice exists for ko/ja/zh — English is the only
+            # sensible piper fallback here.
             log.warning("ElevenLabs failed, falling back to piper English.")
+            return _synthesize_piper(text, "en_US-lessac-medium")
 
+        # route.engine == "piper" — use this language's own voice model.
+        audio_b64 = _synthesize_piper(text, route.voice)
+        if audio_b64 or route.voice == "en_US-lessac-medium":
+            return audio_b64
+
+        # That language's specific model is missing/failed — fall back to
+        # English piper rather than silently returning empty audio.
+        log.warning(
+            "Piper voice '%s' unavailable, falling back to piper English.",
+            route.voice,
+        )
         return _synthesize_piper(text, "en_US-lessac-medium")
 
     except Exception as err:
@@ -100,6 +119,48 @@ async def synthesize(text: str, language_code: str = "en") -> str:
 
 
 # ── piper ─────────────────────────────────────────────────────────────────────
+
+# Per-voice sample rate, read once from each voice's .onnx.json and cached —
+# every "medium"-tier voice used today happens to be 22050Hz, but that's a
+# property of the specific voice files present, not a Piper-wide guarantee
+# ("x_low"/"high" tier voices use other rates). Keyed by voice model name.
+_voice_sample_rate_cache: dict[str, int] = {}
+
+
+def _get_sample_rate(voice_model: str) -> int:
+    """
+    Read the real sample rate for *voice_model* from its .onnx.json config
+    (the "audio" -> "sample_rate" key — confirmed present in every voice
+    config shipped in piper_models/ today; channels and sample width are
+    NOT in this file, see _synthesize_piper()'s call to _pcm_to_wav()).
+
+    Falls back to _DEFAULT_SAMPLE_RATE (with a logged warning) if the config
+    is missing, unreadable, or malformed — never raises.
+    """
+    if voice_model in _voice_sample_rate_cache:
+        return _voice_sample_rate_cache[voice_model]
+
+    config_path = _PIPER_MODELS_PATH / f"{voice_model}.onnx.json"
+    sample_rate = _DEFAULT_SAMPLE_RATE
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        sample_rate = int(config["audio"]["sample_rate"])
+    except FileNotFoundError:
+        log.warning(
+            "Voice config not found: %s — using default sample rate %dHz.",
+            config_path, _DEFAULT_SAMPLE_RATE,
+        )
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as err:
+        log.warning(
+            "Could not read sample rate from %s (%s) — using default %dHz.",
+            config_path, err, _DEFAULT_SAMPLE_RATE,
+        )
+
+    _voice_sample_rate_cache[voice_model] = sample_rate
+    return sample_rate
+
 
 def _synthesize_piper(text: str, voice_model: str) -> str:
     """
@@ -136,8 +197,14 @@ def _synthesize_piper(text: str, voice_model: str) -> str:
             log.error("Piper exited with code %d: %s", result.returncode, result.stderr)
             return ""
 
-        # piper --output-raw produces 16-bit PCM; wrap in a WAV header
-        wav_bytes = _pcm_to_wav(result.stdout, sample_rate=22050, channels=1, sample_width=2)
+        # piper --output-raw always produces mono 16-bit PCM regardless of
+        # voice (this is a fixed property of --output-raw itself, not a
+        # per-voice setting — confirmed absent from every .onnx.json's
+        # "audio" key, which only ever has sample_rate + quality). Sample
+        # rate DOES vary per voice/quality-tier, so that one is read from
+        # the voice's own config rather than assumed.
+        sample_rate = _get_sample_rate(voice_model)
+        wav_bytes = _pcm_to_wav(result.stdout, sample_rate=sample_rate, channels=1, sample_width=2)
         return base64.b64encode(wav_bytes).decode("utf-8")
 
     except FileNotFoundError:

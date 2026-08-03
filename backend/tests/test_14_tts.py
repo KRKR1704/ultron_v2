@@ -156,6 +156,74 @@ async def test_synthesize_model_not_found_returns_empty_string():
     assert result == ""
 
 
+# ── Per-voice sample rate (reads .onnx.json, not hardcoded) ──────────────────
+# None of the mocked tests above assert on the actual sample rate embedded in
+# the output WAV header, so none of them would catch a regression where the
+# rate silently reverts to being hardcoded instead of read per-voice.
+
+async def test_synthesize_embeds_real_sample_rate_from_voice_config(tmp_path):
+    """
+    The WAV header's sample rate must reflect the specific voice's own
+    .onnx.json config — not a hardcoded constant. Proven with a fake voice
+    config at a distinctive, non-default rate (16000Hz, deliberately not
+    22050 — the old hardcoded value) so this can't pass by coincidence.
+    """
+    import json
+    import wave
+    import io
+    import voice.tts as tts_module
+
+    fake_voice = "test_fixture_voice-fake"
+    (tmp_path / f"{fake_voice}.onnx.json").write_text(
+        json.dumps({"audio": {"sample_rate": 16000, "quality": "x_low"}}),
+        encoding="utf-8",
+    )
+
+    fake_pcm = _make_silent_pcm(100, sample_rate=16000)
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = fake_pcm
+    mock_result.stderr = b""
+
+    tts_module._voice_sample_rate_cache.pop(fake_voice, None)  # test isolation
+
+    with patch.object(tts_module, "_PIPER_MODELS_PATH", tmp_path), \
+         patch("voice.tts.get_tts_route") as mock_route, \
+         patch("subprocess.run", return_value=mock_result), \
+         patch("pathlib.Path.exists", return_value=True):
+        from multilingual.tts_router import TTSRoute
+        mock_route.return_value = TTSRoute(engine="piper", voice=fake_voice)
+
+        result = await synthesize("Hello", "en")
+
+    decoded = base64.b64decode(result)
+    w = wave.open(io.BytesIO(decoded), "rb")
+    try:
+        assert w.getframerate() == 16000
+    finally:
+        w.close()
+        tts_module._voice_sample_rate_cache.pop(fake_voice, None)
+
+
+def test_get_sample_rate_falls_back_when_config_missing(tmp_path):
+    """
+    If a voice's .onnx.json doesn't exist, _get_sample_rate() must fall back
+    to the documented default rather than raising — this is the failure mode
+    that lets synthesis degrade gracefully instead of crashing when a voice
+    is misconfigured (e.g. the known-broken de_DE-x_low entry).
+    """
+    import voice.tts as tts_module
+
+    missing_voice = "test_fixture_voice-does_not_exist"
+    tts_module._voice_sample_rate_cache.pop(missing_voice, None)
+
+    with patch.object(tts_module, "_PIPER_MODELS_PATH", tmp_path):
+        result = tts_module._get_sample_rate(missing_voice)
+
+    assert result == tts_module._DEFAULT_SAMPLE_RATE
+    tts_module._voice_sample_rate_cache.pop(missing_voice, None)
+
+
 # ── Live piper test ────────────────────────────────────────────────────────────
 
 @pytest.mark.requires_piper

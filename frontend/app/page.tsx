@@ -20,6 +20,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useVoice } from '@/hooks/use-voice'
+import { useUltronSocket } from '@/hooks/useUltronSocket'
 import { UltronRobot } from '@/components/ultron/ultron-robot'
 import { VoiceWaveform } from '@/components/ultron/voice-waveform'
 import { HudPanel, HudStatus, HudButton } from '@/components/ultron/hud-panel'
@@ -33,7 +34,6 @@ import {
   sendTextMessage,
   switchMode,
   getStatus,
-  WS_URL,
 } from '@/lib/api'
 import { playAudioBase64, stopAudio } from '@/lib/audio'
 import type { UltronMode } from '@/types/ultron'
@@ -67,8 +67,6 @@ export default function UltronPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const wakeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const wsRef = useRef<WebSocket | null>(null)
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
 
   // Stable session ID for this app launch
@@ -152,51 +150,39 @@ export default function UltronPage() {
   }, [isLoading, stopProcessing])
 
   // ── WebSocket connection ─────────────────────────────────────────────────────
+  // useUltronSocket owns the actual connection lifecycle (connect, parse,
+  // exponential-backoff reconnect) — this component only reacts to whatever
+  // frame arrived most recently.
 
-  const connectWebSocket = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return
-
-    try {
-      const ws = new WebSocket(WS_URL)
-      wsRef.current = ws
-
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'wake_word') {
-            // Backend wake word confirmed — mirror the frontend wake animation
-            setWakeActive(true)
-            setFaceState('waking')
-          } else if (msg.type === 'suggestion') {
-            // Proactive screen suggestion
-            addMessage('assistant', msg.text)
-            if (voiceEnabled) playAudioBase64(msg.audio_base64 ?? '').catch(() => {})
-          } else if (msg.type === 'camera_alert') {
-            addMessage('assistant', msg.message)
-          }
-        } catch {
-          // non-JSON frame
-        }
-      }
-
-      ws.onclose = () => {
-        // Reconnect after 3 seconds
-        reconnectTimeoutRef.current = setTimeout(connectWebSocket, 3000)
-      }
-
-      ws.onerror = () => ws.close()
-    } catch {
-      reconnectTimeoutRef.current = setTimeout(connectWebSocket, 5000)
-    }
-  }, [voiceEnabled])
+  const { lastMessage: wsLastMessage } = useUltronSocket()
 
   useEffect(() => {
-    connectWebSocket()
-    return () => {
-      wsRef.current?.close()
-      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
+    if (!wsLastMessage) return
+
+    switch (wsLastMessage.type) {
+      case 'wake_word':
+        // Backend wake word confirmed — mirror the frontend wake animation
+        setWakeActive(true)
+        setFaceState('waking')
+        break
+
+      case 'suggestion':
+        // Proactive screen suggestion
+        addMessage('assistant', wsLastMessage.text)
+        if (voiceEnabled) playAudioBase64(wsLastMessage.audio_base64 ?? '').catch(() => {})
+        break
+
+      case 'camera_alert':
+        addMessage('assistant', wsLastMessage.message)
+        break
+
+      default:
+        // transcript / token / audio / audio_generating / done / ping / pong /
+        // error frames belong to the raw-audio streaming path (used by voice
+        // input, not the text-chat flow this page drives) — nothing to do here.
+        break
     }
-  }, [connectWebSocket])
+  }, [wsLastMessage, voiceEnabled])
 
   // ── Status polling every 5 seconds ─────────────────────────────────────────
 
@@ -463,14 +449,14 @@ export default function UltronPage() {
         {/* ── LEFT SIDEBAR: Widgets ─────────────────────────────── */}
         <aside className="w-72 flex-shrink-0 flex flex-col gap-3 overflow-y-auto">
           <LocationWeatherWidget />
-          <CalendarWidget />
+          <CalendarWidget sessionId={sessionId.current} />
           <CameraWidget
             isBackendCameraActive={backendStatus.camera}
             onCameraToggle={(active) =>
               setBackendStatus(prev => ({ ...prev, camera: active }))
             }
           />
-          <TasksWidget />
+          <TasksWidget sessionId={sessionId.current} />
         </aside>
 
         {/* ── CENTER: ULTRON Face ───────────────────────────────── */}

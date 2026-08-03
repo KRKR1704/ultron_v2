@@ -125,13 +125,12 @@ async def chat(request: Request):
     # ── Read config fresh on every request ────────────────────────────────────
     cfg = app_state["config"]
     mode = cfg.get("mode", "professional")
-    config_language = cfg.get("language", "en")
     user_name = cfg.get("user_name", "sir")
 
     # ── Detect language from input text ───────────────────────────────────────
-    # Prefer detected language over config default so multilingual chat works.
-    detected_language = detect_language_from_text(req.message)
-    language = detected_language if detected_language != "en" else config_language
+    # Session-aware: short/low-confidence messages inherit this session's
+    # last-known language instead of a fresh (and often wrong) guess.
+    language = detect_language_from_text(req.message, session_id=req.session_id)
 
     # ── Mode-switch detection ─────────────────────────────────────────────────
     new_mode = _detect_mode_switch(req.message)

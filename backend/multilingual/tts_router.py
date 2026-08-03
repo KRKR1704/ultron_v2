@@ -24,10 +24,17 @@ class TTSRoute:
 
 _ROUTES: dict[str, TTSRoute] = {
     "en":  TTSRoute(engine="piper",       voice="en_US-lessac-medium"),
-    "hi":  TTSRoute(engine="piper",       voice="hi_IN-x_low"),
-    "te":  TTSRoute(engine="piper",       voice="te_IN-x_low"),
-    "es":  TTSRoute(engine="piper",       voice="es_ES-x_low"),
+    "hi":  TTSRoute(engine="piper",       voice="hi_IN-pratham-medium"),
+    "te":  TTSRoute(engine="piper",       voice="te_IN-maya-medium"),
+    "es":  TTSRoute(engine="piper",       voice="es_ES-davefx-medium"),
     "fr":  TTSRoute(engine="piper",       voice="fr_FR-siwis-medium"),
+    # NOTE: "de_DE-x_low" does not exist in rhasspy/piper-voices — verified
+    # against the actual repo tree (real German voices are eva_k, karlsson,
+    # kerstin, mls, pavoque, ramona, thorsten, thorsten_emotional; none are
+    # named "x_low"). German was out of scope for this fix pass (no model
+    # downloaded/tested) — this entry is left as a KNOWN-BROKEN placeholder
+    # rather than silently "fixed" without verification. Update once a real
+    # de_DE voice is chosen and downloaded.
     "de":  TTSRoute(engine="piper",       voice="de_DE-x_low"),
     "ko":  TTSRoute(engine="elevenlabs",  voice="ELEVENLABS_VOICE_KO"),
     "ja":  TTSRoute(engine="elevenlabs",  voice="ELEVENLABS_VOICE_JA"),

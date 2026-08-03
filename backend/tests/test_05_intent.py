@@ -53,12 +53,16 @@ def test_code_intent_via_direct_answer():
     assert result == "direct_answer"
 
 
-def test_math_intent_via_direct_answer():
+def test_math_intent_routes_to_calculate():
     """
-    'calculate 25 times 4' has no dedicated math intent — falls to direct_answer.
+    'calculate 25 times 4' now has a dedicated "calculate" intent, backed by
+    tools/calculator.py's real Python arithmetic — this replaces the old
+    behavior of forcing math questions to direct_answer, which is exactly
+    how small local LLMs hallucinated numbers instead of computing them.
+    See tests/test_20_calculator.py for the full calculator test suite.
     """
     result = classify_intent("calculate 25 times 4")
-    assert result == "direct_answer"
+    assert result == "calculate"
 
 
 def test_system_app_open_intent():

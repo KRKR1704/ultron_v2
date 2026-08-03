@@ -127,6 +127,15 @@ class PauseResponse(BaseModel):
     active: bool
 
 
+# ── Weather ───────────────────────────────────────────────────────────────────
+
+class WeatherResponse(BaseModel):
+    temperature: float
+    condition: str  # "sunny" | "cloudy" | "rainy" | "snowy" | "windy"
+    location_name: str
+    unit: str = "celsius"
+
+
 # ── WebSocket streaming ───────────────────────────────────────────────────────
 
 class WebSocketMessage(BaseModel):

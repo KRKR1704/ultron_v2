@@ -9,6 +9,7 @@ import type {
   TaskResponse,
   PauseCameraResponse,
   PauseScreenResponse,
+  WeatherResponse,
   UltronMode,
 } from '@/types/ultron'
 
@@ -187,4 +188,12 @@ export function pauseScreen(paused: boolean): Promise<PauseScreenResponse> {
     method: 'POST',
     body: JSON.stringify({ paused }),
   })
+}
+
+/**
+ * Get real current weather for a coordinate.
+ * GET /weather?lat=..&lon=.. → { temperature, condition, location_name, unit }
+ */
+export function getWeather(lat: number, lon: number): Promise<WeatherResponse> {
+  return request<WeatherResponse>(`/weather?lat=${lat}&lon=${lon}`)
 }

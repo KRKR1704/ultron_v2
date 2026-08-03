@@ -10,6 +10,12 @@ venv/
 .mypy_cache/
 .ruff_cache/
 
+# ── Coverage ───────────────────────────────────────────────────────────────────
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
 # ── Environment & secrets ─────────────────────────────────────────────────────
 .env
 .env.local
@@ -22,6 +28,9 @@ backend/token.json
 backend/ultron_config.json
 # Test run artifacts
 backend/tests/last_run_results.json
+frontend/e2e/screenshots/
+frontend/playwright-report/
+frontend/test-results/
 
 # ── Piper TTS — large binaries & model files (download separately) ────────────
 backend/piper_models/

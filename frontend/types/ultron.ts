@@ -74,15 +74,34 @@ export interface PauseScreenResponse {
   active: boolean
 }
 
-// ── WebSocket ─────────────────────────────────────────────────────────────────
+// ── Weather ───────────────────────────────────────────────────────────────────
 
-export interface WebSocketMessage {
-  transcript: string
-  response_text: string
-  audio_base64: string
-  language: UltronLanguage
-  mode: UltronMode
+export type WeatherCondition = 'sunny' | 'cloudy' | 'rainy' | 'snowy' | 'windy'
+
+export interface WeatherResponse {
+  temperature: number
+  condition: WeatherCondition
+  location_name: string
+  unit: string
 }
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+// Discriminated union of every frame api/websocket.py actually sends over
+// ws://.../ws (see backend/api/websocket.py module docstring for the
+// authoritative list).
+
+export type WebSocketMessage =
+  | { type: 'transcript'; text: string }
+  | { type: 'token'; text: string }
+  | { type: 'audio_generating' }
+  | { type: 'audio'; audio_base64: string }
+  | { type: 'done'; language: UltronLanguage; mode: UltronMode }
+  | { type: 'wake_word' }
+  | { type: 'suggestion'; text: string; audio_base64?: string }
+  | { type: 'camera_alert'; message: string }
+  | { type: 'ping' }
+  | { type: 'pong' }
+  | { type: 'error'; message: string }
 
 // ── API error ─────────────────────────────────────────────────────────────────
 
