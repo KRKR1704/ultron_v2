@@ -71,6 +71,85 @@ _APP_NAMES_PATTERN = "|".join(
     re.escape(name) for name in sorted(APP_MAP.keys(), key=len, reverse=True)
 )
 
+# Non-English words for generic (non-brand-name) apps in APP_MAP — most app
+# names in APP_MAP are brand names that don't change across languages
+# (Spotify, Chrome, Discord, ...), but a handful of generic-word apps
+# (calculator, notepad, terminal, paint) genuinely translate. Maps a foreign
+# word -> canonical APP_MAP key, used both to extend app_open's
+# classification pattern below AND (in _run_app_open) to resolve the actual
+# app to launch, since tools.app_control.open_app_from_command() itself only
+# recognizes English/brand names.
+FOREIGN_APP_ALIASES: dict[str, str] = {
+    # Spanish
+    "calculadora": "calculator", "bloc de notas": "notepad", "terminal": "terminal",
+    # French
+    "calculatrice": "calculator", "bloc-notes": "notepad",
+    # German
+    "taschenrechner": "calculator", "notizblock": "notepad",
+    # Hindi
+    "कैलकुलेटर": "calculator",
+    # Korean
+    "계산기": "calculator",
+    # Japanese
+    "電卓": "calculator", "計算機": "calculator",
+    # Chinese
+    "计算器": "calculator",
+    # Arabic
+    "الآلة الحاسبة": "calculator", "الحاسبة": "calculator",
+}
+_FOREIGN_APP_ALIASES_PATTERN = "|".join(
+    re.escape(name) for name in sorted(FOREIGN_APP_ALIASES.keys(), key=len, reverse=True)
+)
+
+# ── Multilingual trigger-word alternations ────────────────────────────────────
+# Reuses the technique already proven for mode-switch detection
+# (api/routes/chat.py's _MODE_SWITCH_PATTERNS): plain keyword/phrase
+# regexes per supported language, ADDED alongside the existing English
+# patterns below rather than replacing them — English detection is
+# unaffected. Covers the project's actual supported-language list per
+# multilingual/language_detector.py's _TEXT_SUPPORTED_LANGUAGES:
+# en, hi, es, fr, te, ko, ja, zh, ar (German included too, matching the
+# precedent set by chat.py's own mode-switch patterns).
+#
+# Split into two groups per category:
+#   - "latin" words (English, Spanish, French, German): plain Latin
+#     alphabet, safe to wrap in \b...\b.
+#   - "script" words (Hindi, Telugu, Korean, Japanese, Chinese, Arabic):
+#     matched as plain unanchored substrings instead of \b...\b. Two
+#     independent reasons, verified directly against Python's `re` engine
+#     before relying on this:
+#       1. Japanese/Chinese write consecutive words with NO spaces between
+#          them, so \bWORD\b fails to match a trigger word sitting directly
+#          against the next word (the normal case in a real sentence) —
+#          there is no transition to a non-word character between them.
+#       2. Hindi/Telugu (Devanagari/Telugu scripts) commonly end words in
+#          a dependent vowel sign ("matra", Unicode category Mn, combining
+#          mark) — e.g. खोलो, खोजो. \w does NOT include combining marks, so
+#          \b silently fails to find a boundary between a trailing matra
+#          and a following space (Mn is non-word, space is non-word — no
+#          transition). Confirmed by direct testing: re.search(r"\bखोजो\b",
+#          "मौसम खोजो") returns None, while re.search(r"खोजो", ...) matches.
+_MULTI_OPEN = r"(open|launch|start|abre|abrir|ouvre|ouvrir|öffne|öffnen)"
+_MULTI_OPEN_SCRIPT = r"(खोलो|खोलें|खोल|తెరువు|తెరవండి|열어|열다|開いて|開く|打开|افتح)"
+_MULTI_SEARCH = r"(search|busca|buscar|cherche|chercher|recherche|suche)"
+_MULTI_SEARCH_SCRIPT = r"(खोजो|खोजें|ढूंढो|ढूंढें|వెతకు|검색|検索|搜索|ابحث)"
+_MULTI_TURN_ON = r"(turn on|enciende|encender|allume|allumer|einschalten)"
+_MULTI_TURN_ON_SCRIPT = r"(चालू करो|जलाओ|వెలిగించు|켜|つけて|点けて|شغل)"
+_MULTI_TURN_OFF = r"(turn off|apaga|apagar|éteins|éteindre|ausschalten)"
+_MULTI_TURN_OFF_SCRIPT = r"(बंद करो|ఆపు|꺼|消して|أطفئ)"
+_MULTI_LIGHTS = r"(lights?|luces|lumières|lichter)"
+_MULTI_LIGHTS_SCRIPT = r"(लाइट|रोशनी|దీపాలు|불|أضواء)"
+_MULTI_FILE_FOLDER = r"(file|folder|directory|archivo|carpeta|dossier|fichier|ordner|datei)"
+_MULTI_FILE_FOLDER_SCRIPT = r"(फ़ाइल|फोल्डर|폴더|파일|ファイル|フォルダ|文件|文件夹|ملف|مجلد)"
+_MULTI_MEETING = r"(meeting|reunión|reunion|agenda|cita|réunion|rendez-vous|termin|besprechung)"
+_MULTI_MEETING_SCRIPT = r"(बैठक|मीटिंग|कार्यक्रम|회의|会議|会议|اجتماع)"
+_MULTI_TASK = r"(remind me|task|recuérdame|recuerdame|tarea|pendiente|rappelle-moi|tâche|tache|erinnere mich|aufgabe)"
+_MULTI_TASK_SCRIPT = r"(याद दिलाओ|टास्क|할일|タスク|リマインド|مهمة|تذكير)"
+_MULTI_CAMERA = r"(camera|cámara|camara|caméra|kamera)"
+_MULTI_CAMERA_SCRIPT = r"(कैमरा|카메라|カメラ|摄像头|相机|كاميرا)"
+_MULTI_SCREEN = r"(screen|pantalla|écran|ecran|bildschirm)"
+_MULTI_SCREEN_SCRIPT = r"(स्क्रीन|화면|画面|屏幕|الشاشة)"
+
 _INTENT_PATTERNS: list[tuple[str, list[str]]] = [
     # (intent_name, [keyword/phrase patterns])
     ("web_search", [
@@ -84,15 +163,41 @@ _INTENT_PATTERNS: list[tuple[str, list[str]]] = [
         r"\bwho is [A-Z]",                        # "who is Elon Musk" (proper noun)
         r"\bwhere is\b",
         r"\bwhen (is|was|did|does)\b",
+        rf"\b({_MULTI_SEARCH})\b", _MULTI_SEARCH_SCRIPT,   # multilingual search verbs
     ]),
     ("browser_open", [
         r"\bopen\b.*(\.com|\.org|\.io|\.net|youtube|reddit|github|google|twitter|x\.com)",
         r"\bgo to\b", r"\bpull up\b", r"\bnavigate to\b",
         r"\bsearch youtube\b", r"\bsearch reddit\b", r"\bsearch google\b",
+        rf"\b({_MULTI_OPEN})\b.*(\.com|\.org|\.io|\.net|youtube|reddit|github|google|twitter|x\.com)",
+        rf"{_MULTI_OPEN_SCRIPT}.*(\.com|\.org|\.io|\.net|youtube|reddit|github|google|twitter|x\.com)",
     ]),
     ("app_open", [
         rf"\bopen\b.*\b({_APP_NAMES_PATTERN})\b",
         r"\blaunch\b", r"\bstart\b.*(app|application|program)",
+        rf"\b({_MULTI_OPEN})\b.*\b({_APP_NAMES_PATTERN}|{_FOREIGN_APP_ALIASES_PATTERN})\b",
+        # No \b around the app name here (unlike the bounded pattern above):
+        # a script-language open verb (e.g. Chinese 打开) is very often
+        # written with NO space before the app name that follows it, so the
+        # position right after the verb has no \w/non-\w transition — \b
+        # would silently fail to match there. Safe to drop: this pattern
+        # only fires at all when a non-Latin trigger verb is present, which
+        # never spontaneously appears inside ordinary English/Spanish/French
+        # text, so there's no new false-positive surface from removing it.
+        rf"{_MULTI_OPEN_SCRIPT}.*({_APP_NAMES_PATTERN}|{_FOREIGN_APP_ALIASES_PATTERN})",
+        # Object-before-verb order: several supported languages (Hindi,
+        # Japanese, Telugu, Korean) are SOV — "कैलकुलेटर खोलो" literally reads
+        # "calculator open", app name before the verb — the reverse of
+        # English/Spanish/French/Chinese/Arabic word order handled above.
+        rf"({_APP_NAMES_PATTERN}|{_FOREIGN_APP_ALIASES_PATTERN}).*{_MULTI_OPEN_SCRIPT}",
+    ]),
+    ("file_open", [
+        r"\bopen\b.*\b(the\s+)?(file|folder|directory)\b",
+        r"\bshow\s+me\b.*\b(the\s+)?file\b",
+        r"\bopen\b.*\bmy\s+(downloads?|desktop|documents?)\b",
+        r"\bopen\b.*\.(txt|pdf|docx?|xlsx?|pptx?|csv|jpe?g|png|py|js|json|md|zip|rtf)\b",
+        rf"\b({_MULTI_OPEN})\b.*\b({_MULTI_FILE_FOLDER})\b",
+        rf"({_MULTI_OPEN_SCRIPT}|{_MULTI_OPEN}).*({_MULTI_FILE_FOLDER_SCRIPT})",
     ]),
     ("type_text", [
         r"\btype\b", r"\bwrite this\b", r"\benter this\b", r"\bpaste\b",
@@ -101,23 +206,29 @@ _INTENT_PATTERNS: list[tuple[str, list[str]]] = [
         r"\bturn on\b", r"\bturn off\b", r"\blights?\b", r"\bthermostat\b",
         r"\btemperature\b", r"\bfan\b", r"\bplug\b", r"\bswitch\b",
         r"\bdim\b", r"\bbrighten\b",
+        rf"\b({_MULTI_TURN_ON})\b", rf"\b({_MULTI_TURN_OFF})\b", rf"\b({_MULTI_LIGHTS})\b",
+        _MULTI_TURN_ON_SCRIPT, _MULTI_TURN_OFF_SCRIPT, _MULTI_LIGHTS_SCRIPT,
     ]),
     ("calendar", [
         r"\bschedule\b", r"\bmeeting\b", r"\bcalendar\b", r"\bappointment\b",
         r"\bevent\b", r"\bbook\b.*\btime\b",
+        rf"\b({_MULTI_MEETING})\b", _MULTI_MEETING_SCRIPT,
     ]),
     ("tasks", [
         r"\btask\b", r"\bremind me\b", r"\bto[- ]do\b", r"\badd to my list\b",
         r"\bcomplete\b.*\btask\b", r"\bfinish\b.*\btask\b", r"\blist.*tasks?\b",
+        rf"\b({_MULTI_TASK})\b", _MULTI_TASK_SCRIPT,
     ]),
     ("camera_analyze", [
         r"\bwhat do you see\b", r"\blook at this\b", r"\banalyze this\b",
         r"\bwhat's in front\b", r"\bwhat am i holding\b", r"\bcamera\b",
+        rf"\b({_MULTI_CAMERA})\b", _MULTI_CAMERA_SCRIPT,
     ]),
     ("screen_analyze", [
         r"\bwhat'?s on (the )?screen\b", r"\bexplain this\b",
         r"\bwhat am i looking at\b", r"\bread (the )?screen\b",
         r"\bscreen\b",
+        rf"\b({_MULTI_SCREEN})\b", _MULTI_SCREEN_SCRIPT,
     ]),
 ]
 
@@ -181,8 +292,24 @@ async def _run_browser_open(text: str) -> str:
 
 
 async def _run_app_open(text: str) -> str:
-    from tools.app_control import open_app_from_command
+    from tools.app_control import open_app, open_app_from_command
+
+    # A foreign-language generic-word app name (e.g. Spanish "calculadora")
+    # won't be recognized by open_app_from_command()'s own English/brand-name
+    # parsing — resolve it to its canonical APP_MAP key here first. Brand
+    # names (Spotify, Chrome, ...) are unaffected and still go through the
+    # normal English-oriented parser below.
+    lower = text.lower()
+    for alias in sorted(FOREIGN_APP_ALIASES.keys(), key=len, reverse=True):
+        if alias in lower:
+            return open_app(FOREIGN_APP_ALIASES[alias])
+
     return open_app_from_command(text)
+
+
+async def _run_file_open(text: str) -> str:
+    from tools.app_control import open_file_from_command
+    return open_file_from_command(text)
 
 
 async def _run_type_text(text: str) -> str:
@@ -403,6 +530,9 @@ async def run_agent(
         elif intent == "app_open":
             tool_result = await _run_app_open(text)
 
+        elif intent == "file_open":
+            tool_result = await _run_file_open(text)
+
         elif intent == "type_text":
             tool_result = await _run_type_text(text)
 
@@ -427,14 +557,15 @@ async def run_agent(
         log.error("Tool execution failed for intent %s: %s", intent, err)
         tool_result = f"Tool encountered an issue: {err}"
 
-    # ── app_open is returned verbatim — never paraphrased by the LLM ──────────
-    # tools.app_control.open_app_from_command() already returns a precise,
-    # human-readable outcome ("Launching X." / "Could not launch X: <error>").
+    # ── app_open / file_open are returned verbatim — never paraphrased ────────
+    # tools.app_control.open_app_from_command()/open_file_from_command()
+    # already return a precise, human-readable outcome ("Launching X." /
+    # "Could not launch X: <error>" / "Opening X." / "File not found: X").
     # Routing that through brain.generate() for a "natural language" rewrite
     # is exactly what let the LLM fabricate a fake success narrative for apps
-    # it never actually launched — so for this intent the tool's own return
-    # value IS the response, with no LLM step in between.
-    if intent == "app_open" and tool_result is not None:
+    # (or files) it never actually opened — so for these intents the tool's
+    # own return value IS the response, with no LLM step in between.
+    if intent in ("app_open", "file_open") and tool_result is not None:
         memory.add_message(session_id, "user", text)
         memory.add_message(session_id, "assistant", tool_result)
         return tool_result

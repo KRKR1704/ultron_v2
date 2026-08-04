@@ -30,7 +30,12 @@ class CameraCapture:
         self._active = False
         self._latest_frame: Optional[np.ndarray] = None
         self._frame_lock = threading.Lock()
-        self._unknown_face_callback = None
+        self._on_unknown_face = None
+        # Known-face encodings to compare detected faces against. No
+        # enrollment feature exists yet (a separate feature, not this bug),
+        # so this stays empty — meaning every detected face is correctly
+        # treated as unknown, since there is nothing to recognize it as.
+        self._known_face_encodings: list = []
 
     # ── Public control ────────────────────────────────────────────────────────
 
@@ -112,23 +117,38 @@ class CameraCapture:
                 self._latest_frame = frame.copy()
 
             if face_det is not None:
-                self._analyse_frame(frame, face_det)
+                self._analyse_frame(frame, face_det, face_recognition)
 
             self._stop_event.wait(timeout=interval)
 
         cap.release()
         face_det and face_det.close()
 
-    def _analyse_frame(self, frame: np.ndarray, face_det) -> None:
-        """Run mediapipe face detection on a frame and fire callbacks."""
+    def _analyse_frame(self, frame: np.ndarray, face_det, face_recognition=None) -> None:
+        """
+        Run mediapipe face detection on a frame, then — when face_recognition
+        is available — compute an encoding for each detected face and fire
+        on_unknown_face for any face that doesn't match a known encoding.
+
+        Callback wiring fixed 2026-08-03 — still requires face_recognition/
+        dlib installed to actually trigger with real camera input; see
+        AUDIT_REPORT.md Known Deferred Items for that separate blocker.
+        """
         try:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = face_det.process(rgb)
 
             if results.detections:
-                # Unknown face logic — simplified (full face_recognition would
-                # compare against a known-faces database stored in memory)
                 log.debug("Face detected in camera frame.")
+
+                if face_recognition is not None:
+                    encodings = face_recognition.face_encodings(rgb)
+                    for encoding in encodings:
+                        matches = face_recognition.compare_faces(
+                            self._known_face_encodings, encoding
+                        )
+                        if not any(matches) and self._on_unknown_face:
+                            self._on_unknown_face()
 
         except Exception as err:
             log.debug("Frame analysis error: %s", err)

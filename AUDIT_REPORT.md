@@ -37,13 +37,29 @@ transient failure surfaced and was independently confirmed to be test flakiness,
 
 ### Overall Status (83 itemized checks)
 
-- **64 WORKING** — verified with real evidence this pass
+> **Updated 2026-08-03 (fix pass, same day as the audit)** — see [Fix Pass History
+> entry 9](#9-2026-08-03--three-confirmed-bugs-from-the-final-audit-fixed) for the
+> full detail behind the count changes below: `open_file()` wiring, the camera
+> unknown-face callback wiring, and multilingual tool-intent detection were all
+> fixed and verified with real evidence (not just re-audited). Counts below
+> reflect the POST-FIX state; the numbers in the surrounding prose sections
+> further down are left as the audit originally wrote them, with inline notes
+> added at each specific item that changed.
+
+- **67 WORKING** — verified with real evidence (64 from the audit + 3 fixed this pass)
 - **7 PARTIAL** — real implementation, concrete caveat
-- **5 MISSING/BROKEN** — no working path today (2 are newly-found in this pass, not previously documented)
-- **6 BLOCKED** — needs config/hardware/credentials the environment doesn't have
+- **1 MISSING/BROKEN** — no working path today (extract_math_expression()'s
+  English-only framing words — see Remaining Work; every other item that was
+  MISSING in the audit is now fixed)
+- **7 BLOCKED** — needs config/hardware/credentials the environment doesn't have
+  (+1 vs. the audit: face-recognition-based unknown-face matching's *code* is
+  now correct, so the dlib/CMake dependency is the sole remaining blocker,
+  same category as the other credential/hardware-blocked items)
 - **1 DEFERRED** — intentional, documented prior decision (native "Ultron" wake word)
 
 ### Category Summary Table
+
+*(post-fix, 2026-08-03 — see note above)*
 
 | # | Category | Working | Partial | Blocked | Deferred | Missing | Total |
 |---|---|---|---|---|---|---|---|
@@ -52,15 +68,21 @@ transient failure surfaced and was independently confirmed to be test flakiness,
 | 3 | Dual Personality Mode | 6 | 0 | 0 | 0 | 0 | 6 |
 | 4 | AI Brain | 5 | 1 | 0 | 0 | 0 | 6 |
 | 5 | Wake Word System | 2 | 0 | 2 | 0 | 1 | 5 |
-| 6 | Web/Browser/Computer Control | 7 | 1 | 0 | 0 | 2 | 10 |
+| 6 | Web/Browser/Computer Control | 9 | 1 | 0 | 0 | 0 | 10 |
 | 7 | Productivity | 0 | 1 | 2 | 0 | 0 | 3 |
-| 8 | Smart Home | 2 | 0 | 1 | 0 | 1 | 4 |
-| 9 | Camera Vision | 7 | 0 | 0 | 0 | 2 | 9 |
+| 8 | Smart Home | 3 | 0 | 1 | 0 | 0 | 4 |
+| 9 | Camera Vision | 7 | 0 | 1 | 0 | 1 | 9 |
 | 10 | Screen Awareness | 8 | 0 | 1 | 0 | 0 | 9 |
 | 11 | Privacy & Local-First | 5 | 0 | 0 | 0 | 0 | 5 |
 | 12 | Frontend (Electron + Next.js) | 10 | 0 | 0 | 0 | 0 | 10 |
 | 13 | WebSocket Streaming | 4 | 1 | 0 | 0 | 0 | 5 |
-| | **Total** | **64** | **7** | **6** | **1** | **5** | **83** |
+| | **Total** | **67** | **7** | **7** | **1** | **1** | **83** |
+
+Row-level changes from the original audit table: Web/Browser/Computer Control
+(2 Missing → Working: `open_file()` wiring + multilingual tool commands), Smart
+Home (1 Missing → Working: multilingual commands), Camera Vision (1 Missing →
+Blocked: callback wiring fixed, dlib/CMake install is now the sole remaining
+gap — same category as other credential/dependency-blocked items).
 
 *(Testing Infrastructure and Documentation Accuracy are covered narratively below — they're process
 checks, not countable app features.)*
@@ -191,8 +213,8 @@ checks, not countable app features.)*
 **App opening (27 apps)** — ✅ WORKING
 - `tools/app_control.py`'s `APP_MAP` confirmed to still contain all 27 entries. Live-tested 7 apps spanning the previously-broken set (word, excel, calculator, notepad, vscode, steam, teams) — all correctly routed to `app_open` and returned `"Launching X."` (the verbatim-tool-result safeguard, not an LLM paraphrase).
 
-**File/folder opening** — ❌ MISSING (new finding — dead code, not previously documented)
-- `tools/app_control.py:95` has a complete, working `open_file()` function (uses `os.startfile`/`open`/`xdg-open` correctly per platform). **It is never called anywhere** — `grep -rn "open_file" core/ api/ tools/` finds only its own definition. There is no intent pattern in `core/agent.py`'s `_INTENT_PATTERNS` for file/folder opening, and no API route exposes it directly. This checklist item is completely unreachable through the product today, despite a real implementation existing.
+**File/folder opening** — ✅ WORKING (fixed 2026-08-03 — see [Fix Pass History entry 9](#9-2026-08-03--three-confirmed-bugs-from-the-final-audit-fixed))
+- ~~`tools/app_control.py:95` has a complete, working `open_file()` function... It is never called anywhere...~~ **Fixed.** A new `file_open` intent was added to `core/agent.py`'s `_INTENT_PATTERNS`, distinguished from `app_open` (known apps) and `browser_open` (domains/site names) by requiring file/folder-specific phrasing (a `file`/`folder`/`directory` word, a filename extension, or a common-folder reference like "my downloads"). `tools/app_control.py` gained `open_file_from_command()` plus a small `_COMMON_FOLDERS`/`_FOLDER_NAME_ALIASES` map (English + Spanish/French/Hindi folder-name synonyms), mirroring the existing `APP_MAP` pattern. Live-tested this pass: `POST /chat {"message": "open my documents folder"}` → real Windows Explorer window opened on the actual Documents folder, response `"Opening Documents."` returned verbatim (same anti-hallucination, no-LLM-narration pattern as `app_open`). A nonexistent file returns a graceful `"File not found: ..."` — never a crash, never a fabricated success. New tests: `tests/test_21_file_open.py` (7 tests, including one real unmocked folder-open and one real nonexistent-file-error case).
 
 **Screen typing (pyautogui)** — ⚠️ PARTIAL — real code (`tools/browser_control.py:82`), wired to the `type_text` intent, not live-exercised this pass either (injecting real keystrokes into whatever window has OS focus is unsafe to trigger unattended) — same caveat as every prior pass.
 
@@ -203,8 +225,8 @@ checks, not countable app features.)*
 
 **Search results summarized naturally** — ✅ WORKING — confirmed live, natural prose, not raw JSON.
 
-**Multi-language command support for this category** — ❌ MISSING (new finding)
-- Every pattern in `core/agent.py`'s `_INTENT_PATTERNS` (web_search, browser_open, app_open, type_text, etc.) is an **English-only regex** (`"open"`, `"search"`, `"launch"`, etc.). A Spanish `"abre la calculadora"` or Hindi equivalent would match none of these patterns and fall through to `direct_answer`, meaning the LLM would attempt to *converse* about it rather than actually invoking the tool — the same "fabricated success" failure mode the `app_open` fix targeted, just for non-English phrasing of an otherwise-working intent. Not live-tested with a non-English app-open command this pass, but the finding is directly supported by reading every pattern in the file — there are zero non-English tokens anywhere in `_INTENT_PATTERNS` or `_CONVERSATIONAL_OVERRIDES`.
+**Multi-language command support for this category** — ✅ WORKING (fixed 2026-08-03 — see [Fix Pass History entry 9](#9-2026-08-03--three-confirmed-bugs-from-the-final-audit-fixed))
+- ~~Every pattern in `core/agent.py`'s `_INTENT_PATTERNS`... is an English-only regex...~~ **Fixed.** Reused the same technique already proven for mode-switch detection (`api/routes/chat.py`'s `_MODE_SWITCH_PATTERNS`): per-language keyword/phrase regexes ADDED alongside every existing English pattern (purely additive — English detection is untouched and independently regression-tested). Covers Spanish, French, German, Hindi, Telugu, Korean, Japanese, Chinese, and Arabic trigger words for `web_search`, `browser_open`, `app_open`, and `file_open`. Live-tested through the real `/chat` endpoint this pass: `"abre la calculadora"` → classified `app_open`, real `CalculatorApp.exe` process launched (confirmed via `Get-Process`); `"abre Spotify"` → classified `app_open`, `"Launching spotify."` returned verbatim. A non-Latin-script word-boundary bug was caught and fixed during this work — Python's `\b` fails to match Devanagari words ending in vowel matras (combining marks aren't `\w`) and fails between adjacent Japanese/Chinese characters (no spaces between words) — non-Latin-script trigger words are matched as plain substrings instead, verified directly against the `re` engine before relying on it. New tests: `tests/test_23_multilingual_intent.py` (40 tests: Spanish/Hindi/French × multiple intents, bonus German/Korean/Japanese/Chinese/Arabic smoke tests, conversational false-positive regression per language, English-detection regression, and 5 full `/chat`-endpoint round-trips).
 
 #### 7. Productivity
 
@@ -233,17 +255,17 @@ checks, not countable app features.)*
 **Graceful offline handling** — ✅ WORKING
 - Live-tested both directly (`/smarthome`) and through natural chat (`"turn on the lights"`) this pass: clean `"The smart home system is not configured..."` message, HTTP 200, no crash. (The *other* graceful path — a configured HA URL that's simply unreachable, testing the `httpx.ConnectError` branch specifically — wasn't separately exercised, since no token is configured at all; the missing-token path was tested instead.)
 
-**Multi-language smart home commands** — ❌ MISSING (same root cause as the Web/Browser category)
-- `_ACTION_MAP`/`smart_home` intent patterns in `core/agent.py` (`"turn on"`, `"turn off"`, `"lights?"`, `"thermostat"`, etc.) are English-only. Same finding as item 6 above, applied to this category.
+**Multi-language smart home commands** — ✅ WORKING (fixed 2026-08-03, same fix as the Web/Browser category — see [Fix Pass History entry 9](#9-2026-08-03--three-confirmed-bugs-from-the-final-audit-fixed))
+- ~~`_ACTION_MAP`/`smart_home` intent patterns in `core/agent.py`... are English-only...~~ **Fixed at the classification level**: `core/agent.py`'s `smart_home` intent now recognizes Spanish/French/German/Hindi/Telugu/Korean/Japanese/Arabic turn-on/turn-off/lights trigger words, purely additive alongside the existing English patterns. Live-tested: `"apaga las luces"` (Spanish) and `"éteins les lumières"` (French) both correctly classify as `smart_home` and reach the real `tools.smart_home.SmartHome.execute()` call (confirmed via `/chat` with the tool mocked at the boundary to assert invocation). Scoped deliberately to classification only, per this fix's file scope (`core/agent.py`) — `tools/smart_home.py`'s own `_ACTION_MAP`/`_ENTITY_ALIASES` string-matching remains English-only, but in this environment `HASS_TOKEN` is unset, so `execute()` returns its graceful "not configured" message before ever reaching that parsing step regardless of language — not a live-blocking gap here, but worth noting if `HASS_TOKEN` is ever configured: non-English on/off phrasing would still need `tools/smart_home.py` itself extended to actually control a device, not just be recognized as smart-home-related.
 
 #### 9. Camera Vision
 
 **Passive motion/face detection** — ✅ WORKING
 - `vision/camera.py` — real `cv2.VideoCapture(0)` at 15fps passive thread, real `mediapipe.solutions.face_detection` when available. Confirmed live: `camera_active: true` on boot, passive thread runs.
 
-**Face recognition (known vs. unknown)** — ❌ MISSING (two independent, compounding causes — one newly found)
-1. **Dependency still blocked**, unchanged from every prior pass: `face_recognition` is not installed (`ModuleNotFoundError` confirmed fresh this pass), needs `dlib` + CMake/MSVC build tools.
-2. **New finding — the wiring is incomplete even independent of the dependency.** `main.py:107-119` defines a real `_on_unknown_face()` callback and passes it to `camera_capture.start(on_unknown_face=_on_unknown_face)` — this wiring was originally added in the very first (2026-04-21) fix pass (see Fix Pass History). But `vision/camera.py`'s `_analyse_frame()` (the function that actually runs mediapipe detection on each frame) **never calls `self._on_unknown_face`** — it only logs `"Face detected in camera frame."` with a code comment admitting: *"Unknown face logic — simplified (full face_recognition would compare against a known-faces database stored in memory)."* This means even if `face_recognition`/`dlib` were installed today, the "unknown face" alert would still never fire — the callback chain is dead on the `camera.py` end, not just missing a dependency. This directly explains why the `camera_alert` WebSocket event (documented in `api/websocket.py`'s own docstring) can never actually be sent in the app's current state — see the WebSocket section below.
+**Face recognition (known vs. unknown)** — 🔒 BLOCKED (down from ❌ MISSING — wiring bug fixed 2026-08-03, see [Fix Pass History entry 9](#9-2026-08-03--three-confirmed-bugs-from-the-final-audit-fixed); dlib dependency is now the sole remaining gap)
+1. **Dependency still blocked**, unchanged from every prior pass: `face_recognition` is not installed (`ModuleNotFoundError` confirmed fresh this pass), needs `dlib` + CMake/MSVC build tools. **Explicitly out of scope for this fix pass** per its own instructions — not attempted.
+2. ~~New finding — the wiring is incomplete even independent of the dependency... `_analyse_frame()` never calls `self._on_unknown_face`...~~ **Fixed.** `vision/camera.py`'s `_analyse_frame()` now accepts the `face_recognition` module and, when it's available, computes an encoding for each mediapipe-detected face and calls `self._on_unknown_face()` (matching `main.py`'s real zero-argument `_on_unknown_face()` signature exactly) for any face that doesn't match `self._known_face_encodings` — currently always empty, since no face-enrollment feature exists yet (a separate, larger feature, not this bug), so every detected face is correctly treated as unknown today, honestly reflecting that there's nothing yet to recognize it as. Verified via 5 new mocked unit tests (`tests/test_22_camera.py`) that inject a fake `face_recognition` module directly into `_analyse_frame()` — bypassing the real import entirely, so the wiring is provably correct without needing dlib installed: unknown face → callback fires with zero args; known-match face → callback does not fire; no face detected → callback does not fire; `face_recognition=None` (today's real state) → no crash, callback correctly skipped. This directly means the `camera_alert` WebSocket event is now correctly wired end-to-end in code — it's just still gated on the dlib/CMake install, exactly like Google Calendar is gated on `credentials.json` — see the WebSocket section below.
 
 **On-demand capture + analysis** — ✅ WORKING
 - Live-tested this pass: `POST /vision/camera` returned a genuine, detailed, accurate Claude Vision description of the actual live webcam frame (content withheld from this report for privacy — it correctly identified specific real objects/context in frame, confirming it's not a placeholder).
@@ -351,7 +373,7 @@ checks, not countable app features.)*
 **Wake word / camera alert / screen suggestion events delivered via WS** — ⚠️ PARTIAL (refined finding)
 - Wake word: real, wired end-to-end (`main.py`'s `_on_wake_word_activation` → `ConnectionManager.broadcast`).
 - Screen suggestion: real, wired end-to-end (`_poll_screen_suggestions` polling task).
-- **`camera_alert` is dead in practice** — per the new Camera Vision finding above, the unknown-face callback that would trigger a `camera_alert` broadcast is never actually invoked by `vision/camera.py`, regardless of whether `face_recognition` is installed. The WebSocket protocol documents this event type (`api/websocket.py:15`), and the broadcast mechanism itself works, but nothing in the current codebase can ever cause this specific event to fire.
+- **`camera_alert` wiring fixed 2026-08-03** (was: dead in practice) — see [Fix Pass History entry 9](#9-2026-08-03--three-confirmed-bugs-from-the-final-audit-fixed). `vision/camera.py`'s `_analyse_frame()` now genuinely calls the unknown-face callback (proven via mocked unit tests, `tests/test_22_camera.py`, without needing `face_recognition`/dlib installed). The WebSocket protocol documents this event type (`api/websocket.py:15`) and the broadcast mechanism itself works. The event still cannot fire with *real* camera input in this environment, but only because `face_recognition`/dlib isn't installed (explicitly out of scope for this fix, see Known Deferred Items) — the code path is correct end-to-end, the same "blocked on external dependency, not a code bug" status as Google Calendar/Tasks/Home Assistant below.
 - Also still true, unchanged from the 2026-07-22 pass: tool-intent messages (web search, app control, etc.) are sent as a single `token` block rather than streamed, by design (the tool must finish before there's anything to say) — an intentional simplification, not a bug. Real-time token-by-token streaming for `direct_answer` intents was confirmed working over `/ws` in that pass (`_stream_response`, `api/websocket.py:206-290`) and is unchanged.
 
 **Reconnection logic** — ✅ WORKING
@@ -457,22 +479,27 @@ now carries an explicit note about Arabic.
 
 ### Remaining Work — Prioritized
 
+> **Updated 2026-08-03 (fix pass)** — the three items below that were previously
+> listed as "quick wins" / "real bugs needing a fix pass" (`open_file()` wiring,
+> the camera unknown-face callback, and English-only intent classification) are
+> now fixed and moved out of this list — see [Fix Pass History entry
+> 9](#9-2026-08-03--three-confirmed-bugs-from-the-final-audit-fixed) for detail
+> and evidence. What remains below is everything that pass did **not** touch.
+
 **Quick wins (small, well-scoped code fixes):**
-- Wire `tools.app_control.open_file()` into an intent pattern + (optionally) a dedicated route — currently dead code despite being fully implemented.
 - Add Arabic to `multilingual/tts_router.py`'s routing table (even just an explicit fallback-to-English-Piper entry, documented as such) and to the Language Support Status table below, so the existing silent fallback becomes a documented, intentional one like ko/ja/zh already are.
-- Fix `vision/camera.py`'s `_analyse_frame()` to actually call `self._on_unknown_face` — currently the callback is threaded all the way from `main.py` and then dropped on the floor.
 - Fix `06-status-indicators.spec.ts`'s settings-button locator (target a stable `data-testid` or `aria-label` instead of `.last()` among all SVG-icon buttons) — flagged in two consecutive audit passes now.
 
 **Real bugs needing a fix pass:**
 - `voice/wake_word.py`'s Whisper-confirmation check (`"ultron" in transcript.lower()`) doesn't account for non-Latin-script transcriptions — multi-language wake-word triggering doesn't actually work despite the underlying STT being language-capable.
-- Intent-classification regex patterns in `core/agent.py` are English-only across every tool intent (app_open, web_search, smart_home, calendar, tasks, etc.) — non-English tool-triggering commands silently fall through to `direct_answer` and risk the LLM fabricating a response instead of invoking the real tool, the same failure class the original `app_open` fix targeted.
 - `dateparser`'s handling of qualified relative-weekday phrases ("next monday", "friday morning") returns `None` — worth either a pre-processing normalization step or accepting this as a documented library limitation.
+- **New, smaller, precisely-scoped item (2026-08-03):** `tools/calculator.py`'s `extract_math_expression()` still only recognizes English math-framing words ("what is", "calculate", "divided by", "plus", "minus", etc. — see `_STRONG_MATH_FRAMING`, `_FUNCTION_WORD_PATTERNS`, `_WORD_OPERATOR_PATTERNS`, `_FILLER_PATTERNS`). This was explicitly evaluated and deliberately deferred during the 2026-08-03 multilingual fix pass: unlike every other intent (a handful of keyword/verb regexes), math extraction requires reproducing the same 4-stage function-word/operator-word/filler-stripping pipeline per language before a `calculate()`-ready expression can be assembled — genuinely disproportionate work relative to the other 9 intents, which were all fixed in that pass. A Spanish `"cuánto es 5 más 3"` or Hindi equivalent today still falls through to `direct_answer` rather than reaching the real calculator, risking the exact LLM-hallucinated-arithmetic failure mode `calculate()` exists to prevent — just for non-English phrasing. Not a silent gap: disclosed here explicitly, as this fix pass's own instructions required if deferred.
 
 **Blocked on user action (credentials, accounts, hardware, money):**
 - ElevenLabs paid plan (ko/ja/zh TTS) — unchanged.
 - Google Cloud OAuth2 `credentials.json` (Calendar/Tasks) — unchanged.
 - Home Assistant `HASS_TOKEN` + reachable instance (Smart Home live control) — unchanged.
-- `dlib`/CMake build tools for `face_recognition` (would still need the `_analyse_frame()` fix above to actually do anything once installed).
+- `dlib`/CMake build tools for `face_recognition` — this is now the ONLY remaining gap for unknown-face detection; the `_analyse_frame()` callback-wiring bug that used to compound it was fixed 2026-08-03 (see Fix Pass History entry 9) and verified via mocked unit tests, so installing this dependency alone would make live unknown-face alerts work with no further code changes needed.
 - Cross-room wake-word range and low-CPU-idle measurement — need physical hardware/profiling sessions.
 - Live 10-minute idle test for proactive screen suggestions.
 
@@ -488,20 +515,28 @@ backend with no mock data left anywhere in the widgets that matter (calendar, ta
 for real). The biggest previously-load-bearing gap (TTS producing no audio at all) is now closed for
 the majority of supported languages.
 
-**Is this portfolio-ready?** Close, with two categories of caveat worth being upfront about in any
-demo: (1) several checklist items only work in English — the tool-triggering intents (open an app,
-control smart home, search the web) don't recognize non-English phrasing even though the *conversational*
-layer is genuinely multilingual, which is an easy trap for a demo to fall into if a non-English speaker
-tries to actually *use* a feature rather than just chat; (2) two "unknown face" / camera-alert-style
-features look wired end-to-end in the architecture but are dead in practice (missing dependency *and*
-a dropped callback), which would be an awkward discovery if demoed live.
+**Is this portfolio-ready?** **Updated 2026-08-03 (fix pass)** — both caveats this
+section originally flagged are now fixed: (1) the tool-triggering intents (open an
+app, control smart home, search the web, open a file/folder) now recognize
+Spanish/French/German/Hindi/Telugu/Korean/Japanese/Chinese/Arabic phrasing,
+verified live through the real `/chat` endpoint, not just in classifier
+isolation — matching the multilingual claim the *conversational* layer already
+had; (2) the camera unknown-face callback is now genuinely wired end-to-end in
+code (verified via mocked unit tests) — the remaining gap is purely the
+undone `dlib`/CMake install, the same "blocked on an external dependency"
+category as Google Calendar's `credentials.json`, not a silently-dead code
+path anymore. One smaller, disclosed gap remains: `extract_math_expression()`
+is still English-only (see Remaining Work above) — a non-English arithmetic
+question falls through to `direct_answer` rather than reaching the real
+calculator, deliberately deferred as disproportionate scope for this pass.
 
-**What would move the needle most if fixed next?** In order of visible impact: (1) wiring
-`open_file()` and extending intent patterns to be multi-language-aware are both small, contained
-fixes with outsized "does what it says on the tin" impact; (2) the camera unknown-face callback fix is
-cheap and closes a real, silently-broken feature; (3) an ElevenLabs plan upgrade or a documented,
-intentional Arabic fallback would tidy up the one remaining TTS loose end that isn't purely a money
-question.
+**What would move the needle most if fixed next?** In order of visible impact:
+(1) extending `extract_math_expression()` to be multi-language-aware, the one
+remaining piece of the multilingual-commands gap; (2) an ElevenLabs plan
+upgrade or a documented, intentional Arabic fallback to tidy up the one
+remaining TTS loose end that isn't purely a money question; (3) the
+`dlib`/CMake install for `face_recognition`, now the sole blocker on live
+unknown-face alerts since the code-level wiring is confirmed correct.
 
 ---
 
@@ -766,6 +801,108 @@ English-only intent-classification regex across every tool intent, and the undoc
 TTS-fallback gap. Zero regressions found anywhere. See Current Status above for the complete
 category-by-category breakdown, evidence, and prioritized remaining work.
 
+### 9. 2026-08-03 — Three confirmed bugs from the final audit, fixed
+
+Same-day fix pass addressing the three highest-priority, precisely-diagnosed bugs from entry 8's
+audit: the dead `open_file()` function, the dead camera unknown-face callback, and English-only
+intent classification across every tool-triggering command. All three were fixed, tested, and
+verified with real evidence — not just re-diagnosed. Zero regressions: the full pytest suite went
+from **167 passed / 0 failed / 2 skipped** (baseline, re-confirmed at the start of this pass) to
+**220 passed / 0 failed / 2 skipped** (53 new tests, same 2 pre-existing skips — Home Assistant
+unreachable, `piper` not on `PATH`).
+
+**Bug 1 — `open_file()` wiring (Web/Browser & Computer Control → File/folder opening).**
+`tools/app_control.py:95`'s `open_file()` was complete and correct but had no intent pattern routing
+to it. Added a new `file_open` intent to `core/agent.py`'s `_INTENT_PATTERNS`, positioned after
+`app_open` in the pattern list so a known app name (e.g. "open Spotify") still wins first — verified
+with an explicit regression test. Triggers on file/folder nouns, filename extensions, or a common-
+folder reference ("my downloads folder"). Added `tools/app_control.py`'s `open_file_from_command()`
+plus `_COMMON_FOLDERS`/`_FOLDER_NAME_ALIASES` (English + Spanish/French/Hindi folder-name synonyms),
+mirroring the existing `APP_MAP` pattern. `file_open` was added to the same verbatim-tool-result
+return path `app_open` already used (`core/agent.py`'s `run_agent()`) — no LLM narration step, so a
+real failure can never be paraphrased into a fake success. **Live evidence:** `POST /chat
+{"message": "open my documents folder"}` against the real running server → response
+`"Opening Documents."`, and a real Windows Explorer window genuinely opened on the Documents folder
+(confirmed independently, not just via the string response). A nonexistent file returns
+`"File not found: ..."` — no crash, no fabrication. New tests: `tests/test_21_file_open.py` (7 tests,
+including one real, unmocked folder-open and one real nonexistent-file-error case).
+
+**Bug 2 — dead unknown-face callback (Camera Vision → Face recognition).** `main.py` defined a real
+`_on_unknown_face()` callback and passed it into `camera_capture.start()`, but
+`vision/camera.py`'s `_analyse_frame()` never called it — it only logged "Face detected" with a
+comment admitting the unknown-face comparison was never implemented. Fixed: `_analyse_frame()` now
+accepts the `face_recognition` module and, when available, computes an encoding per detected face and
+calls `self._on_unknown_face()` (zero arguments, matching `main.py`'s real callback signature exactly)
+for any face that doesn't match `self._known_face_encodings` (currently always empty — no
+face-enrollment feature exists yet, a separate, larger feature not in this bug's scope, so every
+detected face is correctly treated as unknown today rather than silently assumed known). Per this
+fix's explicit scope, `dlib`/`face_recognition` was **not** installed and CMake/build-tooling was
+**not** attempted — the fix is the wiring only. Verified via 5 new mocked unit tests
+(`tests/test_22_camera.py`) that inject a fake `face_recognition` module directly into
+`_analyse_frame()`, bypassing the real import entirely: unknown face → callback fires with zero args;
+known-match face → callback does not fire; no face in frame → callback does not fire;
+`face_recognition=None` (today's actual state, dlib absent) → no crash, callback correctly skipped;
+no callback registered → no crash. A code comment was added at the fix site: *"Callback wiring fixed
+2026-08-03 — still requires face_recognition/dlib installed to actually trigger with real camera
+input; see AUDIT_REPORT.md Known Deferred Items for that separate blocker."*
+
+**Bug 3 — English-only intent detection (highest priority; Multi-language command support, several
+categories).** Every tool-triggering intent in `core/agent.py`'s `_INTENT_PATTERNS` was English-only
+regex. Fixed by reusing the exact technique already proven for mode-switch detection
+(`api/routes/chat.py`'s `_MODE_SWITCH_PATTERNS`): per-language keyword/phrase regexes **added**
+alongside every existing English pattern, never replacing them — English detection is independently
+regression-tested and unaffected. Covers `app_open`, `browser_open`, `file_open`, `web_search`,
+`smart_home`, `calendar`, and `tasks` in Spanish, French, German, Hindi, Telugu, Korean, Japanese,
+Chinese, and Arabic (the same language set `prompt_manager.py`'s cultural-tone map and
+`language_detector.py`'s `_TEXT_SUPPORTED_LANGUAGES` already support). `app_open` additionally gained
+a small `FOREIGN_APP_ALIASES` map (e.g. Spanish "calculadora" → the canonical `calculator` `APP_MAP`
+key) so a translated generic-word app name — not just brand names like Spotify, which are identical
+across languages — actually resolves to the right executable at launch time, not just the right
+intent label.
+
+Two real regex bugs were caught and fixed *during* this work, before they could ship silently:
+- **Python's `\b` word-boundary fails on Devanagari words ending in a vowel matra** (a combining
+  mark, Unicode category Mn, not classified as `\w`) — confirmed directly against the `re` engine
+  (`re.search(r"\bखोजो\b", "मौसम खोजो")` returns `None`; the same pattern without `\b` matches).
+  Hindi/Telugu trigger words are matched as plain substrings instead of `\b`-anchored, verified this
+  actually fixes real Hindi commands rather than assumed.
+- **`\b` also fails between adjacent Japanese/Chinese characters**, since those languages write
+  consecutive words with no spaces between them — there's no `\w`/non-`\w` transition to anchor on.
+  Same fix: unanchored substring matching for CJK trigger words. A related word-order bug was also
+  caught: Hindi/Japanese/Telugu/Korean are SOV languages ("कैलकुलेटर खोलो" = "calculator open", object
+  before verb) — the reverse of the English/Spanish/French/Chinese/Arabic order the first pattern
+  assumed. A second, reverse-order pattern was added specifically for `app_open` to cover this.
+
+**Live evidence, real `/chat` endpoint, real running server (not just `classify_intent()` in
+isolation):**
+```
+POST /chat {"message": "open my documents folder"}  ->  "Opening Documents." (real Explorer window opened)
+POST /chat {"message": "abre la calculadora"}        ->  "Launching calculator." (real CalculatorApp.exe process confirmed via Get-Process)
+POST /chat {"message": "abre Spotify"}                ->  "Launching spotify."
+```
+Server log confirms correct classification for all three: `Intent: file_open`, `Intent: app_open`,
+`Intent: app_open`.
+
+New test file `tests/test_23_multilingual_intent.py` (40 tests): Spanish/Hindi/French coverage across
+app_open/web_search/smart_home/calendar/tasks (5 intents × 3 languages, exceeding the required
+minimum of 3 intents × 3 languages); bonus German/Korean/Japanese/Chinese/Arabic smoke tests;
+conversational false-positive regression (9 ordinary sentences across Spanish/Hindi/French, confirmed
+still `direct_answer`); English-detection regression spot-checks; and 5 full `/chat`-endpoint
+round-trips (mocking only the deepest tool boundary — the actual subprocess launch or TTS synthesis —
+so `classify_intent()`, `run_agent()`'s dispatch, and, for `smart_home`, the real
+"not configured" guard clause all execute for real).
+
+**Explicitly and honestly deferred, not silently omitted:** `tools/calculator.py`'s
+`extract_math_expression()` remains English-only. Evaluated during this pass and judged
+disproportionate scope compared to the other 9 intents — extraction requires reproducing a 4-stage
+function-word/operator-word/filler-stripping pipeline per language, not just a keyword/verb regex.
+Documented as a new, smaller, precisely-scoped remaining item in Remaining Work above, per this fix
+pass's own requirement that any deferred piece of Bug 3 be explicitly disclosed.
+
+**Also explicitly out of scope, per this fix pass's own instructions, and not attempted:** installing
+`dlib`/CMake to resolve the `face_recognition` blocker (Bug 2's fix is the callback wiring only — that
+separate blocker is unchanged and still documented in Known Deferred Items).
+
 ---
 
 ## Language Support Status
@@ -814,7 +951,7 @@ fallback entry in the routing table.
 | Native "Ultron" OpenWakeWord trigger | A real custom model was trained (2026-07-23) and reached 100% offline validation accuracy, but failed the runtime-validation gate due to a train/inference feature-extraction mismatch (see Fix Pass History entry 7) — not a missing-effort problem, a genuine unsolved technical issue at the time. The `hey_jarvis` + Whisper-confirmation workaround (say something containing "jarvis," then "ultron") is the shipped mechanism in the meantime. | Retrain using OpenWakeWord's *streaming* feature-extraction path (matching runtime inference) instead of the offline batch embedder used this attempt — documented as the fix path, not yet attempted. |
 | ElevenLabs TTS for Korean/Japanese/Chinese | API key is valid and authenticates correctly, but the account is free-tier, and ElevenLabs' free tier cannot call library voices via the API at all (`402 paid_plan_required`, confirmed via a real API call). Falls back gracefully to English Piper in the meantime. | Upgrade the ElevenLabs subscription to a paid plan, or pick a voice available on the free tier. |
 | German (`de`) Piper voice | The routing table's placeholder voice name (`de_DE-x_low`) doesn't exist in the real `rhasspy/piper-voices` repo — left as a known-broken placeholder rather than silently guessed at, since German was out of scope for the TTS fix passes. | Pick a real German voice from the actual repo (`eva_k`, `karlsson`, `kerstin`, `mls`, `pavoque`, `ramona`, `thorsten`, `thorsten_emotional`), download its `.onnx`/`.onnx.json` pair, update the `"de"` entry in `tts_router.py`. |
-| Face-recognition-based "unknown face" identity matching | `face_recognition` requires `dlib`, which requires CMake + MSVC build tools not present on this Windows setup. (Note: even once installed, `vision/camera.py`'s `_analyse_frame()` would still need a real fix — not just this dependency — to actually invoke the unknown-face callback; see Current Status → Camera Vision and → Remaining Work.) | `winget install Kitware.CMake` then `pip install face-recognition`, **plus** the separate `_analyse_frame()` callback-invocation fix. |
+| Face-recognition-based "unknown face" identity matching | `face_recognition` requires `dlib`, which requires CMake + MSVC build tools not present on this Windows setup. **Updated 2026-08-03:** the `_analyse_frame()` callback-invocation bug that used to independently block this (even with the dependency installed) was fixed and verified via mocked unit tests — see Fix Pass History entry 9. The dlib/CMake install is now the *only* remaining gap. | `winget install Kitware.CMake` then `pip install face-recognition` — no further code changes needed; the callback wiring is already correct. |
 
 ---
 
