@@ -1,6 +1,8 @@
 # FIXED: Added ConnectionManager for multi-client broadcasting; proactive screen
 #        suggestions now polled and pushed to all connected clients; wake-word
-#        activation signal forwarded to all clients; unknown-face alert supported.
+#        activation signal forwarded to all clients; unknown-face alert supported;
+#        wake-word follow-up command (listen -> understand -> respond) wired to
+#        the same STT -> agent -> TTS pipeline /voice already uses.
 """
 api/websocket.py — WS /ws — Real-time voice streaming & event broadcast.
 
@@ -8,6 +10,7 @@ Receives raw audio chunks from the frontend.
 Streams back JSON frames:
   { "type": "transcript",   "text": str }
   { "type": "token",        "text": str }
+  { "type": "audio_generating" }
   { "type": "audio",        "audio_base64": str }
   { "type": "done",         "language": str, "mode": str }
   { "type": "wake_word" }                         ← wake word activated
@@ -15,6 +18,12 @@ Streams back JSON frames:
   { "type": "camera_alert", "message": str }      ← unknown face detected
   { "type": "ping" / "pong" }
   { "type": "error",        "message": str }
+
+process_wake_word_command() (below) broadcasts the transcript/token/
+audio_generating/audio/done sequence too — same frame vocabulary as the
+per-connection _process_audio() below, just via manager.broadcast() to
+every connected client instead of one, since the wake word detector isn't
+tied to any specific WebSocket connection.
 """
 
 import asyncio
@@ -31,6 +40,7 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 _MAX_CHUNK_BYTES = 1_024 * 1_024  # 1 MB audio buffer
+_WAKE_WORD_SESSION_ID = "wake-word-session"
 
 
 # ── Connection manager ────────────────────────────────────────────────────────
@@ -93,6 +103,55 @@ async def _poll_screen_suggestions() -> None:
             log.debug("Suggestion poller error: %s", err)
 
 
+# ── Wake-word follow-up command processing ─────────────────────────────────────
+
+async def process_wake_word_command(audio_wav_bytes: bytes) -> None:
+    """
+    Handle the follow-up command captured after a wake-word activation
+    (voice/wake_word.py's on_command_captured callback, wired up in
+    main.py's lifespan). Runs the SAME STT -> agent -> TTS pipeline
+    POST /voice uses (api.routes.voice.run_stt_agent_tts) rather than a
+    parallel implementation, and broadcasts the same frame types
+    _process_audio() below already sends per-connection — just to every
+    connected client instead of one, since this isn't tied to a specific
+    WebSocket.
+
+    Always resumes the wake word detector's passive "ultron" listening in
+    a finally block, success or failure, so a single bad turn (STT error,
+    agent exception, TTS failure) can never leave the detector stuck.
+    """
+    from main import app_state
+    from api.routes.voice import run_stt_agent_tts
+    from voice.wake_word import wake_word_detector
+
+    try:
+        cfg = app_state["config"]
+        mode = cfg.get("mode", "professional")
+        language = cfg.get("language", "en")
+        user_name = cfg.get("user_name", "sir")
+
+        stt_result = transcribe_bytes(audio_wav_bytes)
+        await manager.broadcast({"type": "transcript", "text": stt_result.transcript})
+
+        # run_stt_agent_tts already handles an empty transcript gracefully
+        # (returns "I didn't catch that..." without calling the agent) —
+        # reused as-is, so silence/noise after "ultron" can never reach
+        # the agent and get hallucinated into a fake answer.
+        result = await run_stt_agent_tts(stt_result, _WAKE_WORD_SESSION_ID, mode, language, user_name)
+
+        await manager.broadcast({"type": "token", "text": result.response_text})
+        await manager.broadcast({"type": "audio_generating"})
+        await manager.broadcast({"type": "audio", "audio_base64": result.audio_base64})
+        await manager.broadcast({"type": "done", "language": result.language, "mode": result.mode})
+
+    except Exception as err:
+        log.error("process_wake_word_command error: %s", err)
+        await manager.broadcast({"type": "error", "message": "Wake word command processing failed."})
+
+    finally:
+        wake_word_detector.resume_passive_listening()
+
+
 # ── WebSocket endpoint ────────────────────────────────────────────────────────
 
 @router.websocket("/ws")
@@ -107,6 +166,19 @@ async def websocket_endpoint(ws: WebSocket):
             except asyncio.TimeoutError:
                 await ws.send_json({"type": "ping"})
                 continue
+
+            # ws.receive() is the low-level ASGI call — it does NOT raise
+            # WebSocketDisconnect itself (that's only auto-raised by the
+            # high-level receive_text()/receive_json()/receive_bytes()
+            # helpers). On client disconnect it returns a plain
+            # {"type": "websocket.disconnect", ...} message once; calling
+            # receive() again afterward raises RuntimeError('Cannot call
+            # "receive" once a disconnect message has been received.').
+            # Neither branch below matches that dict (no "bytes"/"text"
+            # key), so without this check the loop would silently call
+            # receive() again next iteration and hit that RuntimeError.
+            if data.get("type") == "websocket.disconnect":
+                break
 
             if "bytes" in data and data["bytes"]:
                 chunk = data["bytes"]
@@ -131,8 +203,8 @@ async def websocket_endpoint(ws: WebSocket):
                 elif msg_type == "ping":
                     await ws.send_json({"type": "pong"})
 
-    except WebSocketDisconnect:
-        log.info("WebSocket client disconnected.")
+    except WebSocketDisconnect as err:
+        log.info("WebSocket client disconnected (code=%s).", err.code)
     except Exception as err:
         log.error("WebSocket error: %s", err)
         try:

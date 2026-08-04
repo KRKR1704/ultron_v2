@@ -56,33 +56,25 @@ def test_browser_open_not_misrouted_to_file_open():
 
 # ── Real, unmocked execution ──────────────────────────────────────────────────
 
-def test_real_documents_folder_opens_without_error():
+async def test_real_documents_folder_opens_without_error():
     """
     Full pipeline: a real, reliably-existing folder (the user's Documents
     directory) must actually open via os.startfile/open/xdg-open — no mocks.
     Uses Documents rather than a specific file so the test doesn't depend on
     any file existing beyond what every OS install already has.
     """
-    import asyncio
-
-    result = asyncio.get_event_loop().run_until_complete(
-        _run_file_open("open my documents folder")
-    )
+    result = await _run_file_open("open my documents folder")
     assert result.startswith("Opening"), f"Expected a real success message, got: {result!r}"
     assert "not found" not in result.lower()
     assert "could not" not in result.lower()
 
 
-def test_nonexistent_file_returns_graceful_error_not_crash():
+async def test_nonexistent_file_returns_graceful_error_not_crash():
     """
     Opening a file that doesn't exist must return a real, tool-grounded
     error string (never raise, never a fabricated success).
     """
-    import asyncio
-
-    result = asyncio.get_event_loop().run_until_complete(
-        _run_file_open("open the file this_file_definitely_does_not_exist_xyz123.txt")
-    )
+    result = await _run_file_open("open the file this_file_definitely_does_not_exist_xyz123.txt")
     assert "not found" in result.lower()
     assert not result.lower().startswith("opening")
 

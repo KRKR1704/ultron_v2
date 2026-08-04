@@ -8,6 +8,7 @@ Start with:
     python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -79,22 +80,43 @@ async def lifespan(app: FastAPI):
     # Import the WS manager so callbacks can broadcast to all clients
     from api.websocket import manager as ws_manager
 
+    # Capture the main event loop while we're still running ON it (lifespan
+    # is an async function invoked by the ASGI server's own loop). Background
+    # threads (wake word detector, camera monitor) have no event loop of
+    # their own — asyncio.get_event_loop() called from inside their thread
+    # raises "There is no current event loop in thread '...'". The correct
+    # cross-thread-to-asyncio handoff is run_coroutine_threadsafe() against
+    # this captured reference, not get_event_loop().
+    main_loop = asyncio.get_running_loop()
+
     # ── Wake word detector ────────────────────────────────────────────────────
     if cfg.get("wake_word_active", True):
         try:
             from voice.wake_word import wake_word_detector
-            import asyncio
+            from api.websocket import process_wake_word_command
 
             def _on_wake_word_activation():
                 """Fire a 'wake_word' event to every connected WS client."""
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        ws_manager.broadcast({"type": "wake_word"}),
-                        loop,
-                    )
+                asyncio.run_coroutine_threadsafe(
+                    ws_manager.broadcast({"type": "wake_word"}),
+                    main_loop,
+                )
 
-            wake_word_detector.start(on_activation=_on_wake_word_activation)
+            def _on_wake_word_command(audio_wav_bytes: bytes):
+                """
+                Route the captured follow-up command through the real
+                STT -> agent -> TTS pipeline (see process_wake_word_command)
+                once voice/wake_word.py finishes capturing it.
+                """
+                asyncio.run_coroutine_threadsafe(
+                    process_wake_word_command(audio_wav_bytes),
+                    main_loop,
+                )
+
+            wake_word_detector.start(
+                on_activation=_on_wake_word_activation,
+                on_command_captured=_on_wake_word_command,
+            )
         except Exception as err:
             log.warning("Wake word detector failed to start: %s", err)
 
@@ -102,19 +124,16 @@ async def lifespan(app: FastAPI):
     if cfg.get("camera_active", True):
         try:
             from vision.camera import camera_capture
-            import asyncio
 
             def _on_unknown_face():
                 """Alert all WS clients that an unknown face was detected."""
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        ws_manager.broadcast({
-                            "type": "camera_alert",
-                            "message": "Unknown person detected in camera feed.",
-                        }),
-                        loop,
-                    )
+                asyncio.run_coroutine_threadsafe(
+                    ws_manager.broadcast({
+                        "type": "camera_alert",
+                        "message": "Unknown person detected in camera feed.",
+                    }),
+                    main_loop,
+                )
 
             camera_capture.start(on_unknown_face=_on_unknown_face)
         except Exception as err:
@@ -129,7 +148,6 @@ async def lifespan(app: FastAPI):
             log.warning("Screen monitor failed to start: %s", err)
 
     # ── Start proactive suggestion background poller ───────────────────────────
-    import asyncio
     from api.websocket import _poll_screen_suggestions
     asyncio.create_task(_poll_screen_suggestions())
 

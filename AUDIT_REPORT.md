@@ -1,6 +1,6 @@
 # ULTRON — Audit Report
 
-Last updated: 2026-08-03
+Last updated: 2026-08-04
 Project location: `D:\Ultron_V2\ultron_v2`
 
 This is the single, canonical audit report for the ULTRON project. It consolidates three
@@ -46,7 +46,9 @@ transient failure surfaced and was independently confirmed to be test flakiness,
 > further down are left as the audit originally wrote them, with inline notes
 > added at each specific item that changed.
 
-- **67 WORKING** — verified with real evidence (64 from the audit + 3 fixed this pass)
+- **68 WORKING** — verified with real evidence (64 from the audit + 3 fixed 2026-08-03 + wake word
+  detection's native-model status reconciled below, per [Fix Pass History entry
+  16](#16-2026-08-04--wake-word-saga-closed-out-full-loop-confirmed-live-heard-by-the-user-across-two-turns-and-a-mid-flow-mode-switch))
 - **7 PARTIAL** — real implementation, concrete caveat
 - **1 MISSING/BROKEN** — no working path today (extract_math_expression()'s
   English-only framing words — see Remaining Work; every other item that was
@@ -55,7 +57,10 @@ transient failure surfaced and was independently confirmed to be test flakiness,
   (+1 vs. the audit: face-recognition-based unknown-face matching's *code* is
   now correct, so the dlib/CMake dependency is the sole remaining blocker,
   same category as the other credential/hardware-blocked items)
-- **1 DEFERRED** — intentional, documented prior decision (native "Ultron" wake word)
+- **0 DEFERRED** — the sole item here (native "Ultron" wake word, in place of the `hey_jarvis`
+  workaround) was itself fixed the same day as the original audit (entry 10) and, as of entry 16, is
+  now fully confirmed end-to-end — detection, the listen/respond loop, and real audio heard by the
+  user — not just the trigger-phrase swap this count previously reflected
 
 ### Category Summary Table
 
@@ -63,7 +68,7 @@ transient failure surfaced and was independently confirmed to be test flakiness,
 
 | # | Category | Working | Partial | Blocked | Deferred | Missing | Total |
 |---|---|---|---|---|---|---|---|
-| 1 | Voice & Communication | 3 | 1 | 0 | 1 | 0 | 5 |
+| 1 | Voice & Communication | 4 | 1 | 0 | 0 | 0 | 5 |
 | 2 | Multilingual Engine | 4 | 2 | 0 | 0 | 0 | 6 |
 | 3 | Dual Personality Mode | 6 | 0 | 0 | 0 | 0 | 6 |
 | 4 | AI Brain | 5 | 1 | 0 | 0 | 0 | 6 |
@@ -76,13 +81,17 @@ transient failure surfaced and was independently confirmed to be test flakiness,
 | 11 | Privacy & Local-First | 5 | 0 | 0 | 0 | 0 | 5 |
 | 12 | Frontend (Electron + Next.js) | 10 | 0 | 0 | 0 | 0 | 10 |
 | 13 | WebSocket Streaming | 4 | 1 | 0 | 0 | 0 | 5 |
-| | **Total** | **67** | **7** | **7** | **1** | **1** | **83** |
+| | **Total** | **68** | **7** | **7** | **0** | **1** | **83** |
 
 Row-level changes from the original audit table: Web/Browser/Computer Control
 (2 Missing → Working: `open_file()` wiring + multilingual tool commands), Smart
 Home (1 Missing → Working: multilingual commands), Camera Vision (1 Missing →
 Blocked: callback wiring fixed, dlib/CMake install is now the sole remaining
-gap — same category as other credential/dependency-blocked items).
+gap — same category as other credential/dependency-blocked items), Voice &
+Communication (1 Deferred → Working: native "Ultron" wake word — this row's
+Deferred count had gone stale relative to its own item-level prose below, which
+already reflected entry 10's same-day fix; reconciled here, and further
+strengthened by entry 16's full live end-to-end confirmation).
 
 *(Testing Infrastructure and Documentation Accuracy are covered narratively below — they're process
 checks, not countable app features.)*
@@ -91,16 +100,15 @@ checks, not countable app features.)*
 
 #### 1. Voice & Communication
 
-**Wake word detection ("Ultron"/"Hey Ultron"/"Yo Ultron")** — 🕐 DEFERRED (native trigger) / ✅ WORKING (workaround)
-- File: `backend/voice/wake_word.py`. Per the documented 2026-07-23 training attempt (see Fix Pass History below), a real "ultron" OpenWakeWord model was trained but failed the runtime-validation gate (train/inference feature-extraction mismatch) — that decision stands, not re-litigated here.
-- The `hey_jarvis` + faster-whisper-confirmation workaround was verified **freshly functional** this pass: live startup log —
+**Wake word detection ("Ultron") + the full listen → respond → speak loop** — ✅ WORKING (native custom model updated 2026-08-03; full loop confirmed live 2026-08-04)
+- File: `backend/voice/wake_word.py`. The 2026-07-23 attempt's `hey_jarvis` + faster-whisper-confirmation workaround has been **replaced**. See Fix Pass History entry 10 for the full retrain/validation evidence — real 50-recording positive set verified clean via peak-amplitude/noise-floor check, retrained with the streaming-matched feature pipeline (`prepare_data_streaming.py`), and passed the real `openwakeword.model.Model` runtime validation gate cleanly (50/50 positives detected, 0/10 seen-negative and 0/8 novel-negative false positives, including phonetically-close near-homophones like "oltron"/"altron").
+- Live startup log confirms the custom model loads through the real app path —
   ```
+  INFO voice.wake_word — Custom 'ultron' wake word model loaded from .../wake_word_models/ultron_v2.onnx.
   INFO voice.wake_word — Wake word detector started.
-  INFO voice.wake_word — Ensuring OpenWakeWord models are downloaded...
-  INFO voice.wake_word — OpenWakeWord models ready.
-  INFO voice.wake_word — OpenWakeWord model loaded.
   ```
-  `/status` confirmed `"wake_word_active": true` immediately after boot. Code unchanged since last audit.
+  `/status` confirmed `"wake_word_active": true` immediately after boot.
+- **Updated 2026-08-04 — [Fix Pass History entry 16](#16-2026-08-04--wake-word-saga-closed-out-full-loop-confirmed-live-heard-by-the-user-across-two-turns-and-a-mid-flow-mode-switch):** the full "ultron" → listen → transcribe → agent response → audio playback loop is now confirmed live, with the response genuinely **heard by the user** — not just inspected as a non-empty payload — across two consecutive wake-word turns (a general-knowledge `direct_answer` and a `calculate` intent) plus a mid-session professional → casual mode switch that correctly took effect on the next turn. This closes out the entire wake-word saga tracked across entries 7-16; see that entry for the full chain of fixes this result depended on.
 
 **Speech-to-text (faster-whisper)** — ✅ WORKING
 - `pytest tests/test_15_stt.py` passes as part of the fresh 167/0/2 full-suite run. `transcribe_bytes()` auto-detects language (no forced English), threaded through to `TranscribeResult.language_code`. Not independently re-exercised with a live microphone this pass either (no live mic hardware available in this unattended run) — same caveat as every prior pass.
@@ -322,7 +330,7 @@ checks, not countable app features.)*
 | TTS (ko/ja/zh) | Cloud — ElevenLabs (blocked, falls back to local Piper) |
 | Web search | Cloud — Tavily |
 | OCR | **Local** — EasyOCR/pytesseract |
-| Wake word detection | **Local** — OpenWakeWord + local Whisper |
+| Wake word detection | **Local** — custom OpenWakeWord model (`ultron_v2.onnx`) |
 | Weather | Cloud — Open-Meteo (keyless, but still a network call) |
 | Smart home | Local network — Home Assistant REST (self-hosted, blocked) |
 | Calendar/Tasks | Cloud — Google APIs (blocked) |
@@ -370,8 +378,8 @@ checks, not countable app features.)*
 
 **ConnectionManager broadcast functionality** — ✅ WORKING — `api/websocket.py:38` (`class ConnectionManager`, added in the very first fix pass — see Fix Pass History), `broadcast()` method present; exercised by the passing `test_18_websocket.py` suite (part of the fresh 167-pass run).
 
-**Wake word / camera alert / screen suggestion events delivered via WS** — ⚠️ PARTIAL (refined finding)
-- Wake word: real, wired end-to-end (`main.py`'s `_on_wake_word_activation` → `ConnectionManager.broadcast`).
+**Wake word / camera alert / screen suggestion events delivered via WS** — ⚠️ PARTIAL (refined finding; wake word itself now fully ✅ WORKING)
+- Wake word: real, wired end-to-end (`main.py`'s `_on_wake_word_activation` → `ConnectionManager.broadcast`), and — as of [Fix Pass History entry 16](#16-2026-08-04--wake-word-saga-closed-out-full-loop-confirmed-live-heard-by-the-user-across-two-turns-and-a-mid-flow-mode-switch) — confirmed live end-to-end through actual audio playback heard by the user, not just event delivery. This row stays PARTIAL overall only because of camera_alert below, not wake word.
 - Screen suggestion: real, wired end-to-end (`_poll_screen_suggestions` polling task).
 - **`camera_alert` wiring fixed 2026-08-03** (was: dead in practice) — see [Fix Pass History entry 9](#9-2026-08-03--three-confirmed-bugs-from-the-final-audit-fixed). `vision/camera.py`'s `_analyse_frame()` now genuinely calls the unknown-face callback (proven via mocked unit tests, `tests/test_22_camera.py`, without needing `face_recognition`/dlib installed). The WebSocket protocol documents this event type (`api/websocket.py:15`) and the broadcast mechanism itself works. The event still cannot fire with *real* camera input in this environment, but only because `face_recognition`/dlib isn't installed (explicitly out of scope for this fix, see Known Deferred Items) — the code path is correct end-to-end, the same "blocked on external dependency, not a code bug" status as Google Calendar/Tasks/Home Assistant below.
 - Also still true, unchanged from the 2026-07-22 pass: tool-intent messages (web search, app control, etc.) are sent as a single `token` block rather than streamed, by design (the tool must finish before there's anything to say) — an intentional simplification, not a bug. Real-time token-by-token streaming for `direct_answer` intents was confirmed working over `/ws` in that pass (`_stream_response`, `api/websocket.py:206-290`) and is unchanged.
@@ -903,7 +911,467 @@ pass's own requirement that any deferred piece of Bug 3 be explicitly disclosed.
 `dlib`/CMake to resolve the `face_recognition` blocker (Bug 2's fix is the callback wiring only — that
 separate blocker is unchanged and still documented in Known Deferred Items).
 
+### 10. 2026-08-03 — Wake word retrain succeeded; native "Ultron" trigger now live
+
+Resumed the 2026-07-23 attempt (entry 7) on a second machine with the 50 real "Ultron"
+recordings and 248 Piper negative clips already present. Before touching training, the 50
+positive recordings were checked with a peak-amplitude / noise-floor RMS-ratio scan (per-clip
+peak sample amplitude, framewise RMS noise floor, and burst-to-floor ratio) to rule out a
+dead-mic batch given a prior session on another machine had hit mic issues. Result: 50/50 clips
+clean (peaks 2,400–19,000 vs. floor RMS under 20; ratios all >100x, most >300x) — genuinely
+good source data, not silence/noise-floor-only.
+
+Retrained using `prepare_data_streaming.py` (the streaming-matched feature pipeline written to
+fix entry 7's train/inference mismatch — drives the real chunked `AudioFeatures` path with
+RMS word-span labeling instead of the offline batch embedder). This produced a severe class
+imbalance (173 positive vs. 10,634 negative windows, ~61:1) inherent to labeling only the
+windows where the word has just finished streaming in; `train_ultron_model_v2.py` added
+balanced sampling (`WeightedRandomSampler`) and selected the best checkpoint by balanced
+accuracy rather than raw accuracy to avoid a "predict negative always" collapse. Exported to
+`backend/wake_word_models/ultron_v2.onnx` (old `ultron.onnx` left untouched).
+
+**Step 4 validation gate, real `openwakeword.model.Model` runtime** (`validate_model_v2.py`):
+all 50 real positive recordings scored ≥0.999, all 10 seen-training negatives and all 8 novel
+(never-trained-on) negative phrases scored ≤0.0002 — clean separation, unlike entry 7's ~0.99
+for everything. Given how uniform those scores looked, ran an extra scrutiny pass before
+trusting it: confirmed full-precision scores show genuine per-clip spread (0.99936–0.99944),
+not a constant/broken pipeline; tested against all 23 phonetically-closest hard negatives
+including near-homophones "oltron"/"altron"/"eltron"/"aldron" (46 clips, both Piper synthesis
+variants) — 0 false positives, worst case 0.0125 (40x below the 0.5 threshold); and confirmed
+7/46 hard negatives overlapping the positive clips' fixed 1.5s duration were still correctly
+rejected, ruling out a clip-duration shortcut.
+
+Wired into `backend/voice/wake_word.py`, removing the `hey_jarvis` + Whisper-confirmation
+workaround entirely — the custom model's own validated score now fires activation directly
+(with a 2s cooldown debounce), no secondary transcription step. Verified via the real
+`test_19_integration.py` run (not mocked): live log shows `Custom 'ultron' wake word model
+loaded from .../ultron_v2.onnx`. Full pytest suite: same 195 passed / 25 failed / 2 skipped
+before and after the change (confirmed via `git stash` comparison) — the 25 failures are a
+pre-existing async-test-plugin issue in `test_14_tts.py`/`test_16_brain.py`/`test_17_agent.py`/
+`test_21_file_open.py`, unrelated to wake word and unaffected by this change.
+
+**Caveat, disclosed rather than glossed over:** the positive validation set is drawn from the
+same 50 source recordings (same speaker, mic, room, session) used to build training windows —
+this is a personal-use wake word for one user's own voice, not a generalization claim across
+speakers/mics/rooms. Real-world live-mic testing (Step 6, actually speaking to the running app)
+has not yet been done in this pass — the evidence above is the full offline+runtime-API
+validation gate, not a live-microphone confirmation.
+
 ---
+
+### 11. 2026-08-03 — Fixed 25 pre-existing async-test failures (misplaced pytest.ini)
+
+The 25 failures noted as pre-existing/unrelated in entry 10 (`test_14_tts.py`, `test_16_brain.py`,
+`test_17_agent.py`, `test_21_file_open.py`, all erroring with pytest's core `"async def functions
+are not natively supported"` message) were tracked down and fixed — not a pytest-asyncio
+dependency/version problem as first suspected, but two independent, precisely-diagnosed bugs:
+
+**Root cause 1 (the real cause of all 25+2 failures): `backend/tests/pytest.ini` was in the wrong
+directory.** pytest.ini's `asyncio_mode = auto` setting is what lets every `async def test_...` in
+the suite run without an explicit `@pytest.mark.asyncio` marker. pytest's config/rootdir discovery
+only walks *upward* from the invocation directory (or given path arguments) looking for an ini file
+— it never walks down into subdirectories. With the ini living in `backend/tests/` (a child of
+`backend/`, not an ancestor), running the project's own documented `cd backend && pytest` bare
+invocation never found it: confirmed directly via `pytest -q --collect-only -v`, which showed
+`rootdir: .../backend` with **no `configfile:` line at all** and `asyncio: mode=Mode.STRICT` (the
+pytest-asyncio default when unconfigured) — while still silently collecting the same 222 test items
+via pytest's separate default recursive file discovery, masking the missing config. In strict mode,
+undecorated async tests fall through to pytest core's fallback and fail with exactly this message.
+Smoking-gun confirmation: forcing `pytest -q -o asyncio_mode=auto` on the same bare invocation (no
+other change) immediately produced `220 passed, 0 failed`. Fixed by moving the file to
+`backend/pytest.ini` (content unchanged), which is discoverable regardless of invocation style —
+verified with 5 consecutive bare `pytest -q` runs plus `pytest tests/ -q` and `pytest tests/ -v`,
+all `220 passed, 2 skipped, 0 failed`. (`pytest tests/...` had worked before only by accident: passing
+a path *inside* `tests/` made pytest's upward walk start there, finding the ini by luck — which is
+also why earlier evidence-gathering in this session, run from inside explicit `tests/`-rooted paths,
+never surfaced this.)
+
+**Root cause 2 (a second, smaller bug found en route, in `test_18_websocket.py`):**
+`test_websocket_end_of_speech_processes_audio` called `ws.receive_json()` expecting a possible
+response frame, but `api/websocket.py`'s handler only processes audio `if audio_buffer:` — with
+the empty buffer this test uses, no frame is ever sent, so the blocking receive call ran for its
+full ~60-second internal timeout on every single run (confirmed via `--durations=25`), consuming
+almost the entire suite's wall-clock time and non-deterministically racing against the many
+`asyncio.Runner`-per-test cycles happening on the main thread while a real Starlette
+`TestClient` WebSocket portal thread sat blocked. Fixed by replacing the doomed receive with a
+ping/pong round-trip, which the server always answers — verifies the connection survived
+processing the empty `end_of_speech` without waiting on a response that can never arrive. Dropped
+total suite time from ~69s to ~14s and eliminated the run-to-run flakiness that made this bug
+harder to isolate.
+
+A third, minor issue fixed opportunistically while investigating: two tests in
+`test_21_file_open.py` used `asyncio.get_event_loop().run_until_complete(...)` — manual event-loop
+handling that doesn't mix safely with pytest-asyncio's per-test `Runner` lifecycle. Converted both
+to plain `async def` tests matching the pattern already used by the third test in the same file and
+everywhere else in the suite.
+
+**Final verification, real evidence:** `pytest -q` (bare, project's own documented invocation),
+5 consecutive runs, all identical: `220 passed, 2 skipped, 0 failed`, ~13-17s each. The 2 skips are
+the same legitimate pre-existing ones — Home Assistant unreachable, `piper` not on PATH — confirmed
+via `-rs`. `git status`/`git diff` confirm `backend/voice/wake_word.py` was not touched by this fix
+pass, per this pass's explicit scope.
+
+### 12. 2026-08-03 — Live mic confirms detection works; fixed the activation-callback crash it exposed
+
+Real live-microphone testing (Step 6, actually speaking to the running app — the one piece entry
+10 explicitly flagged as not yet done) confirmed the retrained model detects correctly in
+practice: `Wake word 'ultron' detected (score=0.999). Firing activation.` — real, live, correct.
+This is the first real-microphone confirmation of the whole wake-word saga; everything before this
+was offline/runtime-API validation on recorded clips.
+
+That same live test surfaced a real bug the recorded-clip validation couldn't have caught: the
+activation callback crashed immediately after firing —
+`RuntimeError: There is no current event loop in thread 'Thread-27 (_on_wake_word_activation)'`
+at `main.py`'s `_on_wake_word_activation`. **Root cause:** the callback runs on the wake word
+detector's background thread (started via `threading.Thread(...).start()` in `voice/wake_word.py`),
+which never has an event loop of its own. `asyncio.get_event_loop()` only works inside a thread
+that is itself running a loop or has had one explicitly set — calling it from an arbitrary
+background thread is invalid, not a transient failure. **`vision/camera.py`'s `_on_unknown_face`
+callback had the identical bug**, unnoticed until now only because `dlib`/`face_recognition` isn't
+installed, so it's never actually invoked with real camera input (confirmed via `grep -rn
+get_event_loop backend/` — exactly these two occurrences, nothing else in the codebase).
+
+**Fix:** `main.py`'s `lifespan()` now captures `main_loop = asyncio.get_running_loop()` once,
+while it's genuinely running on the ASGI server's own event loop, and both callbacks use
+`asyncio.run_coroutine_threadsafe(coro, main_loop)` directly against that captured reference —
+the standard cross-thread-to-asyncio handoff pattern — instead of calling `get_event_loop()` from
+inside the background thread at all.
+
+**Investigated the secondary error** (`WebSocket error: Cannot call "receive"...`) reported
+alongside the crash, per this fix pass's instruction to confirm whether it was a downstream
+symptom or a separate bug: it is a **separate, genuine, pre-existing bug**, unrelated to the
+callback crash — confirmed by reading Starlette's `WebSocket.receive()` source directly.
+`api/websocket.py`'s `/ws` loop uses the *low-level* `ws.receive()` call, which does not
+auto-raise `WebSocketDisconnect` the way the high-level `receive_text()`/`receive_json()` helpers
+do. On client disconnect it instead returns one `{"type": "websocket.disconnect"}` message and
+sets Starlette's internal `client_state` to `DISCONNECTED`; that dict has neither a `"bytes"` nor
+`"text"` key, so the existing `if`/`elif` branches silently did nothing and looped back to call
+`receive()` again — which Starlette then unconditionally rejects once `client_state ==
+DISCONNECTED`. This fires on **any** client disconnect, wake-word-related or not — it just hadn't
+been noticed as a hard failure because the surrounding `try/except Exception` already logged and
+swallowed it. Fixed by checking `data.get("type") == "websocket.disconnect"` and breaking the loop
+immediately, before it can call `receive()` a second time.
+
+**Verification.** Live human speech is what surfaced this bug in the first place and isn't
+something re-triggerable programmatically, so the fix itself was verified the most rigorous way
+available short of that: started the real app (real `lifespan`, real `wake_word_detector` with
+the real `ultron_v2.onnx` model), connected a real WebSocket client, then invoked the *actual
+registered* `_on_wake_word_activation` callback from a fresh background thread with
+`threading.excepthook` capturing any thread exception — exactly mirroring what `voice/wake_word.py`
+does on a genuine detection. Result: no thread exception, and the WS client received
+`{"type": "wake_word"}` for real. Confirmed the disconnect fix the same way: searched full test
+suite output for the `"Cannot call"` error string — present 5 times before this fix, **0 times
+after**, with the suite still at `220 passed, 2 skipped, 0 failed` (3 consecutive runs) and the
+camera/websocket/integration test files individually re-verified passing. `vision/camera.py` was
+not modified — only its caller's (`main.py`) callback-registration side.
+
+**Wake word feature status: now genuinely end-to-end confirmed** — real live-mic detection (this
+entry) plus a real, unmocked activation broadcast reaching a connected client (this entry) plus
+the offline/runtime-API validation from entry 10. The `hey_jarvis` + Whisper workaround remains
+fully retired.
+
+### 13. 2026-08-04 — Built the "listen after wake word" loop (was never wired to the local detector)
+
+**Audit finding, before any code was touched:** after firing the `wake_word` WebSocket event,
+`main.py`/`voice/wake_word.py` did nothing else — no mic capture, no STT, no agent call, no TTS.
+The detector immediately resumed scoring the very next chunk for "ultron" again. Separately, the
+frontend turned out to have **two independent, non-communicating wake-word systems**: the backend
+`ultron_v2.onnx` detector (just fixed in entry 12) whose WS event only drove a UI animation, and a
+second, entirely separate frontend-only system (`hooks/use-voice.ts`) using the browser's
+`webkitSpeechRecognition` (Web Speech API) for both wake detection and follow-up transcription —
+which genuinely did have a working listen → transcribe → `/chat` → speak loop wired up, just
+attached to the wrong (cloud-dependent, unverified-in-Electron) trigger, never to the local model.
+Verdict: partially implemented, in a way that could easily have been mistaken for "basically done"
+without reading both sides carefully.
+
+**Design decision, confirmed with the user before building:** reuse the real `/voice` pipeline
+(faster-whisper → agent → Piper) via backend-side audio capture, not the browser's cloud STT —
+preserving the fully-local, privacy-preserving design that was the entire point of training a
+custom local wake-word model in the first place.
+
+**Built:**
+- `api/routes/voice.py`: extracted `run_stt_agent_tts()` — the exact STT-result → agent → TTS →
+  fallback logic `POST /voice` already had, now a standalone function so it's reused, not
+  duplicated, by the new flow.
+- `voice/wake_word.py`: added a `passive → capturing → processing` state machine inside the
+  existing audio callback (no new mic access, no new stream — reuses the one already open for
+  detection). On wake-word trigger, stops scoring for "ultron" and instead buffers raw audio with
+  simple RMS endpointing (`_should_end_capture()`, extracted as a pure, directly-unit-tested
+  function): gives up after 3s of nothing, cuts off 1s after speech trails off, hard-caps at 8s
+  either way. Encodes the capture to a real WAV file (`_encode_wav()`) and hands it to a new
+  `on_command_captured` callback. Stays in `processing` (still not scoring for "ultron") until the
+  pipeline explicitly calls the new `resume_passive_listening()` — done in a `finally` block on the
+  processing side, so a bad turn can never permanently disable detection.
+- `api/websocket.py`: new `process_wake_word_command()` — transcribes the captured WAV, calls
+  `run_stt_agent_tts()` (same pipeline as `/voice`, not a parallel implementation), and broadcasts
+  the same `transcript`/`token`/`audio_generating`/`audio`/`done` frame vocabulary the existing
+  per-connection audio path already defines, just via `manager.broadcast()` to every client instead
+  of one, since the detector isn't tied to a specific connection. An empty transcript (silence,
+  noise, a cough) never reaches the agent — `run_stt_agent_tts()`'s existing "I didn't catch that"
+  fallback handles it, exactly like typed/uploaded audio already does, so there's no new path for
+  the LLM to hallucinate an answer to silence.
+- `main.py`: wired `on_command_captured` alongside the existing `on_activation`, handing the
+  captured audio to `process_wake_word_command()` via the same `run_coroutine_threadsafe(...,
+  main_loop)` pattern entry 12 fixed for the activation callback.
+- `frontend/app/page.tsx`: the WS switch statement's `transcript`/`token`/`audio`/`done` cases were
+  previously dead code (comment: "nothing to do here") — now wired to show the user/assistant
+  messages and play the real response audio, with `wake_word` going straight to a `listening` face
+  state (capture starts immediately server-side, so no artificial delay is needed the way the
+  browser-native path uses one).
+
+**Automated tests** (`tests/test_24_wake_word_followup.py`, 12 new tests): the pure
+`_should_end_capture()` timing logic (max-duration cap, no-speech give-up, silence-hang-after-speech,
+still-speaking continues); `_encode_wav()` produces a real readable WAV; `resume_passive_listening()`
+resets state and is crash-safe with no model loaded; `process_wake_word_command()`'s full pipeline
+with everything mocked — confirms the agent is called with the real transcribed text and the correct
+five-frame broadcast sequence; the silence case confirms the agent is **never** called and the
+graceful fallback is what gets synthesized; an error-injection case confirms
+`resume_passive_listening()` fires even when `transcribe_bytes()` itself raises. Full suite:
+**232 passed, 2 skipped, 0 failed** (220 + 12 new), 3 consecutive runs.
+
+**End-to-end verification, as real as possible without literally speaking:** synthesized "what time
+is it" via the real Piper binary (standing in for a live mic recording — a human voice is the one
+thing that can't be scripted here), started the real app, connected a real WebSocket client, and
+called the real `process_wake_word_command()` directly with **nothing mocked** — real
+faster-whisper, real Ollama-backed agent, real Piper TTS. Result: transcript came back
+`"What time is it?"` (correct), a real in-character agent response was generated, real TTS audio
+(786KB base64) was produced, all five frames arrived at the WS client in the right order, and the
+detector's mode correctly returned to `"passive"` afterward. The one piece this can't cover —
+`voice/wake_word.py`'s live capture state machine reacting to an actual human voice through a real
+microphone — is what a real live-mic test (Step 6, same as entry 12) still needs to confirm, since
+that requires a human speaking, not something scriptable.
+
+**Known, disclosed limitation:** the `transcript`/`token`/`audio`/`done` frame types are shared with
+the per-connection raw-audio-streaming path (`_process_audio()`), which remains entirely unused by
+the frontend (confirmed no caller anywhere sends audio bytes over `/ws`) — not a regression from this
+work, but if that path ever gets a frontend caller in the future, these newly-wired frontend cases
+would fire for both flows and need to be told apart (e.g. by session ID or an explicit source field).
+
+### 14. 2026-08-04 — Live mic test completed the pipeline, but the frontend never saw it: real root cause was dev-mode connection churn, not autoplay
+
+**Reported symptom (a real live-mic test, following on from entry 13):** backend log showed the full
+`wake→listen→STT→agent→TTS` pipeline complete successfully (wake detected 0.999, follow-up captured
+2.88s, transcribed, Ollama responded, Piper resolved audio) — but the frontend devtools console showed
+**none** of the `[wake-word]`/`[audio]` diagnostic logs added in entry 13, only repeated
+`[useUltronSocket] WebSocket error — will reconnect`. The old handler logged that generic string and
+nothing else, so there was no way to tell *why* from the log alone.
+
+**Investigated, in order, exactly per the report's own hypothesis list:**
+
+1. **The WebSocket `error` event itself carries no usable detail — by spec, not by omission.** MDN is
+   explicit: it "does not contain any information about what specifically went wrong." Trying to
+   extract a message/code from the `Event` object handed to `onerror` was a dead end; the real signal
+   lives on the **`close`** event that always follows it (`event.code` / `event.reason` /
+   `event.wasClean`), which the old code discarded entirely (`ws.onclose = () => { ...; scheduleReconnect() }`,
+   no arguments read). That's the actual fix for "get the real underlying error."
+2. **Backoff timing vs. the 10–15s pipeline window:** confirmed plausible — `INITIAL_BACKOFF_MS = 1_000`
+   doubling to `MAX_BACKOFF_MS = 30_000` means a connection that drops twice in a row is already
+   waiting up to 4s, and up to 30s after a few more, comfortably long enough to sit out an entire
+   wake-word turn.
+3. **Dev-mode hot-reload — confirmed as the real root cause, on the backend side specifically.**
+   Read `uvicorn`'s actual reload supervisor (`.venv/Lib/site-packages/uvicorn/supervisors/basereload.py`,
+   installed version 0.32.0): `restart()` sends `CTRL_C_EVENT` (Windows) / `.terminate()` (elsewhere) to
+   the **entire running worker process**, then spawns a brand-new one — this is a hard process kill,
+   not a per-module soft reload, and it takes every open connection (WebSocket included) down with it,
+   with no per-connection graceful close guaranteed before the OS finally tears down the socket. This
+   fires on **any** watched `.py` file save anywhere under the backend's `cwd` — and `git status` at
+   the time of this pass showed `backend/main.py`, `backend/api/websocket.py`,
+   `backend/api/routes/voice.py`, and `backend/voice/wake_word.py` all mid-edit, uncommitted, in the
+   same working tree the live test ran against. A save landing mid-turn is exactly what a close code
+   `1006` (abnormal closure — no close frame, i.e. the process just vanished) would look like, and is
+   architecturally guaranteed to drop the connection outright — this cannot be tuned away with
+   keep-alive/ping settings, because the whole process is gone, not just idle.
+   Next.js Fast Refresh (frontend, port 3000) was also checked and ruled out as the *primary* driver:
+   the old hook's unmount cleanup already nulled every handler before calling `.close()`, so a clean
+   component remount would **not** have logged an error at all — it would reconnect silently. It was,
+   however, a **secondary, compounding** issue: every hook-instance remount (React Strict Mode's
+   dev-only double-invoke, or any Fast Refresh boundary reset) tore down and recreated the socket from
+   scratch, adding avoidable reconnect cycles on top of whatever the backend was doing. Fixed as well
+   (below), since it's a real, verifiable-in-code churn source independent of the exact backend timing.
+4. **Backend `ConnectionManager`/endpoint holding a connection open for a slow multi-second pipeline:**
+   ruled out by reading `api/websocket.py`'s receive loop — `asyncio.wait_for(ws.receive(), timeout=60.0)`
+   with a `ping` sent on timeout is a 60s idle budget, an order of magnitude longer than the ~10–15s
+   pipeline; the wake-word follow-up path also broadcasts via a separate `manager.broadcast()` call
+   entirely outside any single connection's receive loop, so it isn't gated by that loop's timing at
+   all. No bug here.
+
+**Fix — `frontend/hooks/useUltronSocket.ts`, rewritten:**
+- `onclose` now logs the real diagnostic detail: `code`, `reason`, `wasClean`. `onerror` logs
+  `readyState` and points at the following `closed` log rather than repeating the same empty string.
+- The WebSocket is now a **module-level singleton** shared by every hook instance, with a small
+  listener-set pub/sub feeding each instance's local `isConnected`/`lastMessage` state, instead of a
+  per-component-instance `useRef`. A remounting component now reuses an already-open/connecting socket
+  instead of closing and recreating it — removes the frontend's own contribution to reconnect churn.
+- `INITIAL_BACKOFF_MS` lowered `1_000 → 500`, `MAX_BACKOFF_MS` lowered `30_000 → 10_000` — shrinks the
+  worst-case blind window after a real drop (this is a local desktop app talking to `localhost`, not a
+  public service that needs a slow, polite backoff).
+- `backend/api/websocket.py`: `except WebSocketDisconnect` now logs the disconnect `code` too, for the
+  same "log the real reason, not a generic string" fix on the server side.
+
+**What this does *not*, and cannot, fix:** `uvicorn --reload` killing the whole process on every `.py`
+save during active development is inherent to how `--reload` works, not an app bug — the real
+mitigation is procedural: don't run the backend with `--reload` while doing an end-to-end live-mic
+verification pass, since *any* save mid-turn (by a human or an AI assistant iterating in the same
+session) will drop the in-flight response no matter how fast the frontend reconnects. Confirmed this
+cannot happen outside of dev by reading the mechanism itself, not by re-running a full build: the
+reload supervisor (`uvicorn/supervisors/basereload.py`) is only ever instantiated when `reload=True`/
+`--reload` is passed to `uvicorn.run()` — a normal production start command (`uvicorn main:app --host
+0.0.0.0 --port 8000`, no `--reload`) never creates a file watcher or supervisor process, so there is
+nothing there to kill the worker mid-request. Symmetrically, Next's Fast Refresh/HMR client only ships
+in the `next dev` server bundle; a static export (`next build`, what `electron:build` produces) has no
+HMR runtime at all, so a component remount from a file-watch event is structurally impossible in a
+packaged build.
+
+**Verification:**
+- `pytest -q` (backend, unrelated to this fix but re-run to confirm no regression): `232 passed, 2
+  skipped` — identical to the pre-fix baseline.
+- `npx tsc --noEmit`: no new type errors from `useUltronSocket.ts` (the project's only current
+  type-check failures are pre-existing, unrelated `SpeechRecognition` DOM-lib gaps in `use-voice.ts`,
+  already tolerated today via `next.config.js`'s `typescript.ignoreBuildErrors`).
+- **Not independently re-verified with a live microphone in this pass** — this environment has no
+  physical mic/speaker access, so the actual wake→listen→STT→agent→TTS→playback round-trip needs a
+  human to redo it, same constraint as every prior "real live mic test" entry in this log. What *can*
+  be checked without speaking a word, in under 10 seconds, is the specific mechanism identified above:
+  with the app running and the WS connected, save any backend `.py` file (even just adding then
+  removing a blank line) and watch devtools — the new logging should show
+  `[useUltronSocket] closed — code=1006 reason="(none)" wasClean=false — reconnecting in 500ms`
+  immediately, followed by a reconnect. That single check directly confirms or refutes the root cause
+  above independent of timing luck, and is the recommended first thing to try before re-running the
+  full mic test.
+
+### 15. 2026-08-04 — Connection stayed up this time; found the real bug the drop had been hiding — a single-slot `lastMessage` state silently dropping rapid-fire WS frames
+
+**Reported symptom (the next live-mic pass after entry 14's connection fix):** the WebSocket stayed
+connected the whole time — no drop, no reconnect — confirming entry 14's fix holds. Backend log again
+showed the full pipeline succeeding, this time for a **"calculate"**-intent command ("what is 47 times
+89"). The text response appeared correctly in the chat box, but no audio played, and — same as
+entry 14's starting symptom — **zero** `[wake-word]`/`[audio]` console lines appeared, despite those
+being unconditional at the top of the `case 'audio'` block added in entry 13.
+
+**Step 1 — does `calculate` actually reach TTS?** Read `core/agent.py`'s `run_agent()` (lines 503-519)
+and `_run_calculate_and_narrate()` (lines 376-461) end to end: `calculate` is resolved entirely inside
+`run_agent()` and returns a plain response string — no different in shape from any other intent's
+return value. The caller on every audio-producing path (`api/routes/voice.py`'s
+`run_stt_agent_tts()`, used by both `POST /voice` and the wake-word follow-up) calls
+`synthesize(response_text, language)` **unconditionally**, after `run_agent()` returns, with zero
+branching on which intent produced the text. There is no code path by which `calculate` specifically
+skips TTS — the hypothesis was disprovable by reading the code alone, and was then independently
+disproven by evidence below.
+
+**Step 2 — are the logs actually wired?** `grep -n "\[wake-word\]\|\[audio\]"` across `frontend/`
+confirmed all three log lines from entry 13 are still present in `app/page.tsx`'s `case 'audio':`
+block, with the identifying `console.log` unconditional at the top of the case (fires before the
+`voiceEnabled`/`b64` branching below it) — not gated behind anything that could be false. Nothing was
+accidentally removed or misplaced.
+
+**Step 3 — real end-to-end comparison, direct_answer vs calculate, without a human microphone.** Built
+a throwaway diagnostic harness (not part of the app, deleted after use) that ran the **real** backend
+(`uvicorn`, no `--reload`, real Ollama agent, real Piper TTS, real `ConnectionManager`) with one
+temporary debug route added from *outside* `api/websocket.py`/`main.py` (no repo files touched) that
+calls the real `process_wake_word_command()` with only `transcribe_bytes` swapped for a fixed
+transcript — bypassing STT/the physical detector, not the pipeline itself. A real Playwright Chromium
+browser loaded the real `next dev` page and was driven through both an unmistakably `direct_answer`
+command ("what time is it") and an unmistakably `calculate` command ("what is 47 times 89"), with
+three independent taps recording what actually happened:
+
+1. **Network-layer WS frames** (Playwright's CDP `websocket`/`framereceived` events — completely
+   outside the page's own JS): for **both** commands, all 5 frames arrived in order —
+   `transcript → token → audio_generating → audio (real, six-figure-length base64) → done`. This
+   proves the backend broadcasts real audio for `calculate` exactly like `direct_answer` —
+   the "calculate path missing TTS" hypothesis is conclusively false, not just unlikely.
+2. **Raw `WebSocket.onmessage`**, instrumented via a `page.addInitScript` wrapping the `WebSocket`
+   constructor before the app's own code runs: fired exactly once per frame, 5/5, every time, for both
+   commands. This proves the browser delivers every frame individually to JS — nothing is lost at the
+   network/dispatch layer either.
+3. **The app's own console output**: with the pre-existing `lastMessage`-state code (i.e. *before* any
+   fix in this entry), **zero** `[wake-word]` lines appeared for **either** command — not just
+   `calculate`. The chat DOM *did* correctly show both the transcribed user text and the assistant's
+   response text for both commands (proving `'transcript'`/`'token'` were each individually
+   processed), but the `'audio'` case never ran for either one.
+
+Point 3 landing on *both* intents, combined with points 1-2 proving the data physically arrives intact
+and individually, pins the loss to exactly one place: inside `useUltronSocket.ts`'s old design, a
+single `useState<WebSocketMessage | null>` (`lastMessage`) overwritten on every incoming frame, read
+back out by a `useEffect` in `page.tsx` keyed on that state. `audio_generating`, `audio`, and `done`
+are broadcast by `process_wake_word_command()` back-to-back with **no real async work between them**
+(`result.audio_base64` was already fully computed before any of the three sends) — closely-spaced
+enough that React 18's automatic batching collapses all three `setLastMessage(...)` calls (each a
+plain, non-functional overwrite) into a single render. Only the *last* value in that batch — `done` —
+ever reached the effect; `audio_generating` and `audio` were discarded before any consumer read them,
+**every single time, for every intent** — this had nothing to do with `calculate` specifically, and
+was never intent-dependent. It had simply never been observable before entry 14's fix, because every
+prior live test had the WebSocket dropping/reconnecting first, which looked like the more obvious
+culprit and *was* also a real, separate bug.
+
+**Fix — `frontend/hooks/useUltronSocket.ts` and `frontend/app/page.tsx`:** replaced the
+`lastMessage` state slot with a direct per-message callback. `useUltronSocket()` now takes an optional
+`onMessage: (msg: WebSocketMessage) => void` and calls it synchronously, once per frame, in arrival
+order, straight from the WebSocket's own `onmessage` handler — never through React state, so there is
+no shared slot for concurrent updates to collapse into. `page.tsx`'s old `useEffect` keyed on
+`wsLastMessage` became a `useCallback` (`handleWsMessage`, same `switch` body, same `[voiceEnabled]`
+dependency) passed straight into the hook; the hook stores it in a ref internally so the callback
+always sees the latest `voiceEnabled` without needing to resubscribe on every change. `isConnected`
+stays a normal `useState` — it's a legitimate single current-value signal (open/closed), not a stream
+of discrete events, so it was never at risk the way `lastMessage` was.
+
+**Verification — re-ran the exact same three-tap real-browser diagnostic against the fix, no other
+change:** `[wake-word] 'audio' frame received: 304000 base64 chars, voiceEnabled=true` (direct_answer)
+and `[wake-word] 'audio' frame received: 269184 base64 chars, voiceEnabled=true` (calculate) both now
+fire, every run. One additional real, honestly-reported finding surfaced *during this same
+verification*, unrelated to the bug just fixed: the direct_answer run also logged `console:warning The
+AudioContext was not allowed to start. It must be resumed (or created) after a user gesture` — expected
+and already accounted for, not a new bug. This diagnostic runs a plain Chromium tab with Playwright
+never issuing a real click/keypress, so no user gesture exists to satisfy the autoplay policy; the real
+app either runs inside Electron (which sets
+`autoplay-policy: no-user-gesture-required` in `electron/main.ts`) or, in a plain browser tab, relies on
+the `unlockAudioContext()` first-gesture listener added alongside entry 13's frontend work. This is the
+autoplay concern already on record, not a fresh regression — flagged here only because it was real,
+observed evidence from this pass and is worth keeping in mind for the next plain-browser (non-Electron)
+verification.
+- `pytest -q`: `232 passed, 2 skipped` — no regression.
+- `npx tsc --noEmit`: no new errors from either changed file.
+
+**Also noted for the user:** this test was run with `--reload` again, despite entry 14's explicit
+recommendation to omit it for live verification passes. It happened not to cause a drop this time —
+but the risk entry 14 documented (any `.py` save during the session kills the whole backend process,
+taking every open WebSocket with it) is unchanged and still live; it simply didn't get triggered this
+run. Please omit `--reload` for the next verification pass regardless of this outcome, so a real repeat
+test isn't occasionally reintroducing the entry-14 failure mode on top of whatever's being tested that
+day.
+
+### 16. 2026-08-04 — Wake-word saga closed out: full loop confirmed live, heard by the user, across two turns and a mid-flow mode switch
+
+**The live test entry 15's fix set out to enable finally landed clean.** Wake word → listen →
+transcribe → agent response → audio playback confirmed end to end, with real audio genuinely **heard
+by the user** (not just a non-empty `audio_base64` payload inspected in a log, the actual bar every
+earlier "success" in this saga had fallen short of one way or another — see entries 10 through 15).
+Two consecutive wake-word turns in the same session, covering both intent families exercised in
+entry 15's diagnostic:
+
+1. A general-knowledge `direct_answer` turn — heard correctly.
+2. A `calculate` turn — heard correctly, confirming entry 15's fix holds for the exact intent that
+   exposed the bug.
+
+**A mid-session mode switch (professional → casual) was also exercised live in between, and took
+effect correctly** — the personality/tone change applied to the very next turn without needing a
+reconnect, restart, or any other manual recovery step, confirming the WebSocket singleton and message
+dispatch fixes from entries 14-15 hold up under normal continued use, not just a single isolated turn.
+
+**What this closes out:** every distinct failure mode found across this saga — the original
+`hey_jarvis` + Whisper-confirmation workaround, replaced by a native custom-trained model (entry 10,
+after a failed first attempt in entry 7), the activation-callback thread-crash (entry 12), the missing
+listen-after-wake loop (entry 13), the WebSocket connection dropping mid-pipeline under
+`uvicorn --reload` (entry 14), and the single-slot `lastMessage` state silently discarding the `audio`
+frame (entry 15) — has now been independently verified fixed, with the final link (a human actually
+hearing the response) confirmed live rather than inferred from logs or a scripted/mocked pipeline. No
+further known gaps in the wake-word → listen → respond → speak loop itself; remaining wake-word items
+(cross-room range, low-CPU-idle measurement, multi-language trigger phrase support) are pre-existing,
+separately-tracked, unrelated limitations — see [Wake Word System](#5-wake-word-system) and Remaining
+Work — not part of this loop.
+
+**Verification:** `pytest -q` — `232 passed, 2 skipped` — identical to every prior pass in this saga,
+confirming the fix set landed with zero regressions across the whole run, not just the WebSocket/voice
+surface touched by entries 14-15.
 
 ## Language Support Status
 
@@ -948,7 +1416,6 @@ fallback entry in the routing table.
 
 | Item | Why it's deferred | What would unblock it |
 |---|---|---|
-| Native "Ultron" OpenWakeWord trigger | A real custom model was trained (2026-07-23) and reached 100% offline validation accuracy, but failed the runtime-validation gate due to a train/inference feature-extraction mismatch (see Fix Pass History entry 7) — not a missing-effort problem, a genuine unsolved technical issue at the time. The `hey_jarvis` + Whisper-confirmation workaround (say something containing "jarvis," then "ultron") is the shipped mechanism in the meantime. | Retrain using OpenWakeWord's *streaming* feature-extraction path (matching runtime inference) instead of the offline batch embedder used this attempt — documented as the fix path, not yet attempted. |
 | ElevenLabs TTS for Korean/Japanese/Chinese | API key is valid and authenticates correctly, but the account is free-tier, and ElevenLabs' free tier cannot call library voices via the API at all (`402 paid_plan_required`, confirmed via a real API call). Falls back gracefully to English Piper in the meantime. | Upgrade the ElevenLabs subscription to a paid plan, or pick a voice available on the free tier. |
 | German (`de`) Piper voice | The routing table's placeholder voice name (`de_DE-x_low`) doesn't exist in the real `rhasspy/piper-voices` repo — left as a known-broken placeholder rather than silently guessed at, since German was out of scope for the TTS fix passes. | Pick a real German voice from the actual repo (`eva_k`, `karlsson`, `kerstin`, `mls`, `pavoque`, `ramona`, `thorsten`, `thorsten_emotional`), download its `.onnx`/`.onnx.json` pair, update the `"de"` entry in `tts_router.py`. |
 | Face-recognition-based "unknown face" identity matching | `face_recognition` requires `dlib`, which requires CMake + MSVC build tools not present on this Windows setup. **Updated 2026-08-03:** the `_analyse_frame()` callback-invocation bug that used to independently block this (even with the dependency installed) was fixed and verified via mocked unit tests — see Fix Pass History entry 9. The dlib/CMake install is now the *only* remaining gap. | `winget install Kitware.CMake` then `pip install face-recognition` — no further code changes needed; the callback wiring is already correct. |

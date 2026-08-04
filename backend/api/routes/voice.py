@@ -17,6 +17,65 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def run_stt_agent_tts(
+    stt_result,
+    session_id: str,
+    mode: str,
+    config_language: str,
+    user_name: str,
+) -> VoiceResponse:
+    """
+    Shared STT-result -> agent -> TTS pipeline, extracted so every audio-in
+    entry point (POST /voice, and the wake-word follow-up capture in
+    api/websocket.py's process_wake_word_command()) runs identical logic
+    instead of duplicating it. Takes an already-computed TranscribeResult
+    so callers can transcribe via whichever path fits their input (base64,
+    multipart upload, or raw captured mic bytes).
+    """
+    if not stt_result.transcript:
+        fallback = "I didn't catch that. Could you try again?"
+        return VoiceResponse(
+            transcript="",
+            response_text=fallback,
+            audio_base64=await synthesize(fallback, config_language),
+            language=config_language,
+            mode=mode,
+        )
+
+    # Use detected language for response
+    language = stt_result.language_code or config_language
+
+    try:
+        response_text = await run_agent(
+            text=stt_result.transcript,
+            session_id=session_id,
+            mode=mode,
+            language_code=language,
+            user_name=user_name,
+        )
+
+        audio_b64 = await synthesize(response_text, language)
+
+        return VoiceResponse(
+            transcript=stt_result.transcript,
+            response_text=response_text,
+            audio_base64=audio_b64,
+            language=language,
+            mode=mode,
+        )
+
+    except Exception as err:
+        log.error("run_stt_agent_tts error: %s", err)
+        fallback = "I had trouble processing the audio. Please try again."
+        return VoiceResponse(
+            transcript=stt_result.transcript,
+            response_text=fallback,
+            audio_base64=await synthesize(fallback, language),
+            language=language,
+            mode=mode,
+        )
+
+
 @router.post("/voice", response_model=VoiceResponse)
 async def voice(request: Request):
     from main import app_state
@@ -64,45 +123,4 @@ async def voice(request: Request):
         stt_result = transcribe_base64(req.audio_base64)
         session_id = req.session_id
 
-    if not stt_result.transcript:
-        fallback = "I didn't catch that. Could you try again?"
-        return VoiceResponse(
-            transcript="",
-            response_text=fallback,
-            audio_base64=await synthesize(fallback, config_language),
-            language=config_language,
-            mode=mode,
-        )
-
-    # Use detected language for response
-    language = stt_result.language_code or config_language
-
-    try:
-        response_text = await run_agent(
-            text=stt_result.transcript,
-            session_id=session_id,
-            mode=mode,
-            language_code=language,
-            user_name=user_name,
-        )
-
-        audio_b64 = await synthesize(response_text, language)
-
-        return VoiceResponse(
-            transcript=stt_result.transcript,
-            response_text=response_text,
-            audio_base64=audio_b64,
-            language=language,
-            mode=mode,
-        )
-
-    except Exception as err:
-        log.error("/voice error: %s", err)
-        fallback = "I had trouble processing the audio. Please try again."
-        return VoiceResponse(
-            transcript=stt_result.transcript,
-            response_text=fallback,
-            audio_base64=await synthesize(fallback, language),
-            language=language,
-            mode=mode,
-        )
+    return await run_stt_agent_tts(stt_result, session_id, mode, config_language, user_name)

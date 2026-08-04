@@ -35,8 +35,8 @@ import {
   switchMode,
   getStatus,
 } from '@/lib/api'
-import { playAudioBase64, stopAudio } from '@/lib/audio'
-import type { UltronMode } from '@/types/ultron'
+import { playAudioBase64, stopAudio, unlockAudioContext } from '@/lib/audio'
+import type { UltronMode, WebSocketMessage } from '@/types/ultron'
 
 // ── Local message type ────────────────────────────────────────────────────────
 
@@ -121,6 +121,30 @@ export default function UltronPage() {
     startListeningRef.current = startListening
   }, [startListening])
 
+  // ── Unlock audio playback on the first real user gesture ───────────────────
+  // Electron's main process disables the autoplay policy outright (see
+  // electron/main.ts), but this is a defense-in-depth fallback for running
+  // the Next.js dev server directly in a plain browser tab, where that
+  // override doesn't apply — without it, the FIRST wake-word follow-up
+  // response (if it's the very first audio played all session, with no
+  // prior click/keypress) can be silently blocked by the browser's
+  // autoplay policy: no error, the response text appears, but nothing
+  // plays. One-time listener, removes itself after firing once.
+
+  useEffect(() => {
+    const unlock = () => {
+      unlockAudioContext()
+      window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('keydown', unlock)
+    }
+    window.addEventListener('pointerdown', unlock)
+    window.addEventListener('keydown', unlock)
+    return () => {
+      window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('keydown', unlock)
+    }
+  }, [])
+
   // ── Auto-scroll ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
@@ -151,38 +175,92 @@ export default function UltronPage() {
 
   // ── WebSocket connection ─────────────────────────────────────────────────────
   // useUltronSocket owns the actual connection lifecycle (connect, parse,
-  // exponential-backoff reconnect) — this component only reacts to whatever
-  // frame arrived most recently.
+  // exponential-backoff reconnect). Frames are handled here synchronously,
+  // one call per frame, NOT via a `useEffect` reacting to a "last message"
+  // state slot — a single overwritable state slot silently dropped frames
+  // whenever several arrived close enough together to land in the same
+  // React 18 auto-batched update, which the wake-word follow-up pipeline
+  // does by construction (`audio_generating`/`audio`/`done` are broadcast
+  // back to back with no real async work between them, since the audio was
+  // already fully synthesized before any of the three is sent) — only the
+  // LAST frame of that burst was ever actually seen, so 'audio' (and the
+  // playback it triggers) was being silently discarded every time,
+  // regardless of intent. See useUltronSocket.ts for the full writeup.
 
-  const { lastMessage: wsLastMessage } = useUltronSocket()
-
-  useEffect(() => {
-    if (!wsLastMessage) return
-
-    switch (wsLastMessage.type) {
+  const handleWsMessage = useCallback((msg: WebSocketMessage) => {
+    switch (msg.type) {
       case 'wake_word':
-        // Backend wake word confirmed — mirror the frontend wake animation
+        // Backend detected "ultron" and is already capturing the
+        // follow-up command by the time this arrives — go straight to
+        // 'listening' rather than a fake delay, since capture is real.
+        if (wakeTimeoutRef.current) clearTimeout(wakeTimeoutRef.current)
         setWakeActive(true)
-        setFaceState('waking')
+        setFaceState('listening')
+        break
+
+      case 'transcript':
+        // Backend finished transcribing the wake-word follow-up command.
+        // An empty transcript means nothing was heard (silence/timeout) —
+        // the fallback "I didn't catch that" response still arrives via
+        // the 'token'/'audio' frames below, so no separate message here.
+        if (msg.text) addMessage('user', msg.text)
+        setFaceState('thinking')
+        break
+
+      case 'token':
+        // Full response text for the wake-word follow-up turn.
+        addMessage('assistant', msg.text)
+        break
+
+      case 'audio': {
+        // Wake-word follow-up response audio, real backend TTS.
+        const b64 = msg.audio_base64 ?? ''
+        console.log(
+          `[wake-word] 'audio' frame received: ${b64.length} base64 chars, ` +
+          `voiceEnabled=${voiceEnabled}`
+        )
+        setFaceState('speaking')
+        if (voiceEnabled && b64) {
+          playAudioBase64(b64).catch((err) =>
+            console.error('[wake-word] playAudioBase64 rejected:', err)
+          )
+        } else if (!b64) {
+          console.warn('[wake-word] \'audio\' frame had an empty audio_base64 — nothing to play.')
+        }
+        break
+      }
+
+      case 'done':
+        // Wake-word follow-up turn complete — return to idle and let
+        // passive "ultron" detection (already resumed server-side) show
+        // as such again.
+        setWakeActive(false)
+        setFaceState('idle')
         break
 
       case 'suggestion':
         // Proactive screen suggestion
-        addMessage('assistant', wsLastMessage.text)
-        if (voiceEnabled) playAudioBase64(wsLastMessage.audio_base64 ?? '').catch(() => {})
+        addMessage('assistant', msg.text)
+        if (voiceEnabled) {
+          playAudioBase64(msg.audio_base64 ?? '').catch((err) =>
+            console.error('[suggestion] playAudioBase64 rejected:', err)
+          )
+        }
         break
 
       case 'camera_alert':
-        addMessage('assistant', wsLastMessage.message)
+        addMessage('assistant', msg.message)
         break
 
       default:
-        // transcript / token / audio / audio_generating / done / ping / pong /
-        // error frames belong to the raw-audio streaming path (used by voice
-        // input, not the text-chat flow this page drives) — nothing to do here.
+        // audio_generating / ping / pong / error — no UI action needed
+        // beyond what the surrounding frames already set.
         break
     }
-  }, [wsLastMessage, voiceEnabled])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [voiceEnabled])
+
+  useUltronSocket(handleWsMessage)
 
   // ── Status polling every 5 seconds ─────────────────────────────────────────
 

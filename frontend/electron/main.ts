@@ -5,6 +5,19 @@ import * as path from 'path'
 // true only after electron-builder has packaged the app.
 const isDev = !app.isPackaged
 
+// Chromium's default autoplay policy (document-user-activation-required)
+// blocks Web Audio API playback that isn't triggered by a direct user
+// gesture (click, keydown). Manual chat responses play fine because
+// they're triggered from a Send-button click / Enter keypress; the
+// wake-word follow-up response does not — it arrives asynchronously over
+// a WebSocket message with no click/keypress anywhere in its call stack,
+// so it gets silently blocked (no thrown error, audio just never starts).
+// ULTRON is a trusted, first-party local desktop app, not an untrusted
+// website — this override is intended to always play locally-generated
+// assistant responses regardless of what triggered them. Must be set
+// before app.whenReady().
+app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required')
+
 let mainWindow: BrowserWindow | null = null
 
 function createWindow(): void {

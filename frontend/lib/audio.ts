@@ -30,7 +30,21 @@ async function _drainQueue(): Promise<void> {
 
   try {
     const ctx = getAudioContext()
+    const stateBefore = ctx.state
     if (ctx.state === 'suspended') await ctx.resume()
+
+    if (stateBefore === 'suspended' && ctx.state === 'suspended') {
+      // resume() was called but the context is still suspended — this is
+      // exactly what Chromium's autoplay policy does when playback isn't
+      // triggered by a user gesture: no error is thrown, it just silently
+      // never starts. Logged loudly since this failure mode is otherwise
+      // invisible (no exception anywhere in the call chain).
+      console.warn(
+        '[audio] AudioContext still suspended after resume() — playback ' +
+        'is likely blocked by the browser/Electron autoplay policy ' +
+        '(no user gesture in this call\'s history).'
+      )
+    }
 
     // Decode base64 → ArrayBuffer
     const binaryStr = atob(base64)
@@ -56,6 +70,27 @@ async function _drainQueue(): Promise<void> {
 
   // Play next clip if queued
   if (_queue.length > 0) await _drainQueue()
+}
+
+/**
+ * Unlock the shared AudioContext using a genuine user gesture. Call this
+ * from a real click/keydown handler as early as possible (e.g. once on
+ * app mount) so later NON-gesture-triggered playback (wake-word follow-up
+ * responses arriving over WebSocket, proactive suggestions) isn't silently
+ * blocked by the browser's autoplay policy. Electron's main process also
+ * disables this policy outright (see electron/main.ts) — this is a
+ * fallback for running the Next.js dev server directly in a plain browser
+ * tab, which doesn't get that override.
+ */
+export async function unlockAudioContext(): Promise<void> {
+  const ctx = getAudioContext()
+  if (ctx.state === 'suspended') {
+    try {
+      await ctx.resume()
+    } catch (err) {
+      console.warn('[audio] AudioContext unlock attempt failed:', err)
+    }
+  }
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

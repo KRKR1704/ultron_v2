@@ -90,8 +90,17 @@ def test_websocket_receives_message_after_send(client):
 
 def test_websocket_end_of_speech_processes_audio(client):
     """
-    Sending end_of_speech with an empty buffer must result in an empty
-    transcript frame (no audio buffered yet).
+    Sending end_of_speech with an empty buffer must not crash or hang the
+    connection. api/websocket.py's handler only calls _process_audio()
+    `if audio_buffer:` — with nothing buffered, end_of_speech is a
+    structural no-op and the server never sends a response frame for it.
+    A prior version of this test called ws.receive_json() expecting a
+    possible frame anyway, which blocked on the real WebSocketTestSession
+    queue for its full ~60s internal timeout every run (confirmed via
+    --durations). Verify liveness instead with a ping/pong round-trip,
+    which the server DOES always answer — proving the connection/message
+    loop survived processing the empty end_of_speech, without waiting on
+    a response that can never arrive.
     """
     empty_result = _FakeSTTResult(transcript="", language="English", language_code="en")
 
@@ -101,15 +110,11 @@ def test_websocket_end_of_speech_processes_audio(client):
 
         with client.websocket_connect("/ws") as ws:
             ws.send_text(json.dumps({"type": "end_of_speech"}))
-            # No audio in buffer — nothing happens, no crash
-            # Give it a moment to process
-            try:
-                frame = ws.receive_json()
-                # If we got a transcript, it should be empty
-                if frame.get("type") == "transcript":
-                    assert frame.get("text") == ""
-            except Exception:
-                pass  # No frame received is also acceptable (empty buffer)
+            # No audio in buffer — nothing happens, no crash. Confirm the
+            # loop is still alive and responsive afterward.
+            ws.send_text(json.dumps({"type": "ping"}))
+            frame = ws.receive_json()
+            assert frame == {"type": "pong"}
 
 
 def test_websocket_disconnect_handled_gracefully(client):
