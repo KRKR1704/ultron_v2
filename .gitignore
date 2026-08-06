@@ -28,6 +28,9 @@ backend/token.json
 backend/ultron_config.json
 # Test run artifacts
 backend/tests/last_run_results.json
+
+# ── Memory vault — contains real personal conversation data, NEVER commit ────
+backend/vault/
 frontend/e2e/screenshots/
 frontend/playwright-report/
 frontend/test-results/

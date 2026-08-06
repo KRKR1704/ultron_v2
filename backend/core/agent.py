@@ -1,22 +1,37 @@
 """
-core/agent.py — Regex-based intent router.
+core/agent.py — Regex-based intent router, driven by declarative skill files.
 
 Classifies user input into one of several tool intents using plain
 `re` pattern matching (NOT LangGraph — `langgraph` is a listed
 dependency but is not imported or used anywhere in this module or
-elsewhere in the backend). Once an intent is classified, the matching
-tool is executed and, for most intents, the tool's result is handed to
-brain.py to phrase a natural-language response. `app_open` is the
-exception: its tool result is returned to the user verbatim (see
-`run_agent()`) so a launch failure can never be narrated as a success.
+elsewhere in the backend). The matching MECHANISM is unchanged from the
+original hardcoded version: `re.search()` per pattern, first match (by
+priority) wins. What's declarative now is the DATA — every intent's trigger
+patterns, handler function, and special-handling flags live in
+`backend/skills/*.SKILL.md` files (parsed by `skills/loader.py`), not in a
+Python literal in this module. Adding a new tool intent means adding a new
+`*.SKILL.md` file — see `skills/README.md`.
+
+Once an intent is classified, the matching skill's handler is executed and,
+for most intents, the tool's result is handed to brain.py to phrase a
+natural-language response. A skill can opt out of that via two flags (see
+`skills/README.md`): `verbatim_response` (the tool's own return value IS the
+response, no LLM rewrite — used by `app_open`/`file_open` so a launch/open
+failure can never be narrated as a fake success) and `requires_grounding`
+(the handler owns its full response and is called with the complete request
+context — used by `calculate`'s verify/retry/template-fallback safeguard
+against LLM arithmetic drift).
 """
 
+import inspect
 import logging
 import re
 from typing import Any, Optional
 
 from core.brain import brain
 from core.memory import memory
+from core.vault import vault
+from skills.loader import load_skills
 from tools.app_control import APP_MAP
 
 log = logging.getLogger(__name__)
@@ -62,175 +77,54 @@ _CONVERSATIONAL_OVERRIDES: list[str] = [
     r"\bexplain (what|how|why|the)\b",
 ]
 
-# Built from tools.app_control.APP_MAP so the intent classifier and the
-# actual app map can never drift apart — any app added to APP_MAP becomes
-# detectable here automatically, with zero additional code changes.
-# Longest names first so e.g. "visual studio code" matches before "code"-less
-# alternatives could shadow it.
+# ── Skill loading ──────────────────────────────────────────────────────────────
+# Loads every backend/skills/*.SKILL.md file once at import time (same timing
+# as the old hardcoded _INTENT_PATTERNS build — no per-request cost) and
+# sorts by priority. See skills/loader.py and skills/README.md. Adding a new
+# tool intent going forward means adding a new *.SKILL.md file, not editing
+# this module.
+_SKILLS = load_skills()
+_SKILLS_BY_ID = {skill.id: skill for skill in _SKILLS}
+
+# app_open's classification pattern has ONE dynamic component, carried over
+# unchanged from the original design: it must be built from
+# tools.app_control.APP_MAP at runtime so a new app added there becomes
+# voice/text-triggerable with zero code changes (the anti-drift design this
+# project has relied on since the original multilingual fix pass — see
+# skills/app_open.SKILL.md for the full rationale). FOREIGN_APP_ALIASES
+# itself is static data and lives in that skill's frontmatter as plain YAML;
+# only the ALTERNATION PATTERNS built from live APP_MAP keys stay dynamic
+# Python, appended to the loaded skill's pattern list right here.
+_app_open_skill = _SKILLS_BY_ID["app_open"]
+FOREIGN_APP_ALIASES: dict[str, str] = _app_open_skill.data.get("foreign_aliases", {})
+
 _APP_NAMES_PATTERN = "|".join(
     re.escape(name) for name in sorted(APP_MAP.keys(), key=len, reverse=True)
 )
-
-# Non-English words for generic (non-brand-name) apps in APP_MAP — most app
-# names in APP_MAP are brand names that don't change across languages
-# (Spotify, Chrome, Discord, ...), but a handful of generic-word apps
-# (calculator, notepad, terminal, paint) genuinely translate. Maps a foreign
-# word -> canonical APP_MAP key, used both to extend app_open's
-# classification pattern below AND (in _run_app_open) to resolve the actual
-# app to launch, since tools.app_control.open_app_from_command() itself only
-# recognizes English/brand names.
-FOREIGN_APP_ALIASES: dict[str, str] = {
-    # Spanish
-    "calculadora": "calculator", "bloc de notas": "notepad", "terminal": "terminal",
-    # French
-    "calculatrice": "calculator", "bloc-notes": "notepad",
-    # German
-    "taschenrechner": "calculator", "notizblock": "notepad",
-    # Hindi
-    "कैलकुलेटर": "calculator",
-    # Korean
-    "계산기": "calculator",
-    # Japanese
-    "電卓": "calculator", "計算機": "calculator",
-    # Chinese
-    "计算器": "calculator",
-    # Arabic
-    "الآلة الحاسبة": "calculator", "الحاسبة": "calculator",
-}
 _FOREIGN_APP_ALIASES_PATTERN = "|".join(
     re.escape(name) for name in sorted(FOREIGN_APP_ALIASES.keys(), key=len, reverse=True)
 )
-
-# ── Multilingual trigger-word alternations ────────────────────────────────────
-# Reuses the technique already proven for mode-switch detection
-# (api/routes/chat.py's _MODE_SWITCH_PATTERNS): plain keyword/phrase
-# regexes per supported language, ADDED alongside the existing English
-# patterns below rather than replacing them — English detection is
-# unaffected. Covers the project's actual supported-language list per
-# multilingual/language_detector.py's _TEXT_SUPPORTED_LANGUAGES:
-# en, hi, es, fr, te, ko, ja, zh, ar (German included too, matching the
-# precedent set by chat.py's own mode-switch patterns).
-#
-# Split into two groups per category:
-#   - "latin" words (English, Spanish, French, German): plain Latin
-#     alphabet, safe to wrap in \b...\b.
-#   - "script" words (Hindi, Telugu, Korean, Japanese, Chinese, Arabic):
-#     matched as plain unanchored substrings instead of \b...\b. Two
-#     independent reasons, verified directly against Python's `re` engine
-#     before relying on this:
-#       1. Japanese/Chinese write consecutive words with NO spaces between
-#          them, so \bWORD\b fails to match a trigger word sitting directly
-#          against the next word (the normal case in a real sentence) —
-#          there is no transition to a non-word character between them.
-#       2. Hindi/Telugu (Devanagari/Telugu scripts) commonly end words in
-#          a dependent vowel sign ("matra", Unicode category Mn, combining
-#          mark) — e.g. खोलो, खोजो. \w does NOT include combining marks, so
-#          \b silently fails to find a boundary between a trailing matra
-#          and a following space (Mn is non-word, space is non-word — no
-#          transition). Confirmed by direct testing: re.search(r"\bखोजो\b",
-#          "मौसम खोजो") returns None, while re.search(r"खोजो", ...) matches.
 _MULTI_OPEN = r"(open|launch|start|abre|abrir|ouvre|ouvrir|öffne|öffnen)"
 _MULTI_OPEN_SCRIPT = r"(खोलो|खोलें|खोल|తెరువు|తెరవండి|열어|열다|開いて|開く|打开|افتح)"
-_MULTI_SEARCH = r"(search|busca|buscar|cherche|chercher|recherche|suche)"
-_MULTI_SEARCH_SCRIPT = r"(खोजो|खोजें|ढूंढो|ढूंढें|వెతకు|검색|検索|搜索|ابحث)"
-_MULTI_TURN_ON = r"(turn on|enciende|encender|allume|allumer|einschalten)"
-_MULTI_TURN_ON_SCRIPT = r"(चालू करो|जलाओ|వెలిగించు|켜|つけて|点けて|شغل)"
-_MULTI_TURN_OFF = r"(turn off|apaga|apagar|éteins|éteindre|ausschalten)"
-_MULTI_TURN_OFF_SCRIPT = r"(बंद करो|ఆపు|꺼|消して|أطفئ)"
-_MULTI_LIGHTS = r"(lights?|luces|lumières|lichter)"
-_MULTI_LIGHTS_SCRIPT = r"(लाइट|रोशनी|దీపాలు|불|أضواء)"
-_MULTI_FILE_FOLDER = r"(file|folder|directory|archivo|carpeta|dossier|fichier|ordner|datei)"
-_MULTI_FILE_FOLDER_SCRIPT = r"(फ़ाइल|फोल्डर|폴더|파일|ファイル|フォルダ|文件|文件夹|ملف|مجلد)"
-_MULTI_MEETING = r"(meeting|reunión|reunion|agenda|cita|réunion|rendez-vous|termin|besprechung)"
-_MULTI_MEETING_SCRIPT = r"(बैठक|मीटिंग|कार्यक्रम|회의|会議|会议|اجتماع)"
-_MULTI_TASK = r"(remind me|task|recuérdame|recuerdame|tarea|pendiente|rappelle-moi|tâche|tache|erinnere mich|aufgabe)"
-_MULTI_TASK_SCRIPT = r"(याद दिलाओ|टास्क|할일|タスク|リマインド|مهمة|تذكير)"
-_MULTI_CAMERA = r"(camera|cámara|camara|caméra|kamera)"
-_MULTI_CAMERA_SCRIPT = r"(कैमरा|카메라|カメラ|摄像头|相机|كاميرا)"
-_MULTI_SCREEN = r"(screen|pantalla|écran|ecran|bildschirm)"
-_MULTI_SCREEN_SCRIPT = r"(स्क्रीन|화면|画面|屏幕|الشاشة)"
 
-_INTENT_PATTERNS: list[tuple[str, list[str]]] = [
-    # (intent_name, [keyword/phrase patterns])
-    ("web_search", [
-        r"\bsearch (for |the web |about )?\w",   # "search for X"
-        r"\blook up\b",                           # "look up X"
-        r"\blatest\b",                            # "latest news on X"
-        r"\bnews (on|about|for)\b",               # "news about X" (not bare "news")
-        r"\btell me about [a-zA-Z]",              # "tell me about Python" (not "tell me what is")
-        r"\bwhat is the (current|latest|recent|today'?s|live)\b",  # real-time info
-        r"\bwhat'?s (happening|going on|new|trending)\b",
-        r"\bwho is [A-Z]",                        # "who is Elon Musk" (proper noun)
-        r"\bwhere is\b",
-        r"\bwhen (is|was|did|does)\b",
-        rf"\b({_MULTI_SEARCH})\b", _MULTI_SEARCH_SCRIPT,   # multilingual search verbs
-    ]),
-    ("browser_open", [
-        r"\bopen\b.*(\.com|\.org|\.io|\.net|youtube|reddit|github|google|twitter|x\.com)",
-        r"\bgo to\b", r"\bpull up\b", r"\bnavigate to\b",
-        r"\bsearch youtube\b", r"\bsearch reddit\b", r"\bsearch google\b",
-        rf"\b({_MULTI_OPEN})\b.*(\.com|\.org|\.io|\.net|youtube|reddit|github|google|twitter|x\.com)",
-        rf"{_MULTI_OPEN_SCRIPT}.*(\.com|\.org|\.io|\.net|youtube|reddit|github|google|twitter|x\.com)",
-    ]),
-    ("app_open", [
-        rf"\bopen\b.*\b({_APP_NAMES_PATTERN})\b",
-        r"\blaunch\b", r"\bstart\b.*(app|application|program)",
-        rf"\b({_MULTI_OPEN})\b.*\b({_APP_NAMES_PATTERN}|{_FOREIGN_APP_ALIASES_PATTERN})\b",
-        # No \b around the app name here (unlike the bounded pattern above):
-        # a script-language open verb (e.g. Chinese 打开) is very often
-        # written with NO space before the app name that follows it, so the
-        # position right after the verb has no \w/non-\w transition — \b
-        # would silently fail to match there. Safe to drop: this pattern
-        # only fires at all when a non-Latin trigger verb is present, which
-        # never spontaneously appears inside ordinary English/Spanish/French
-        # text, so there's no new false-positive surface from removing it.
-        rf"{_MULTI_OPEN_SCRIPT}.*({_APP_NAMES_PATTERN}|{_FOREIGN_APP_ALIASES_PATTERN})",
-        # Object-before-verb order: several supported languages (Hindi,
-        # Japanese, Telugu, Korean) are SOV — "कैलकुलेटर खोलो" literally reads
-        # "calculator open", app name before the verb — the reverse of
-        # English/Spanish/French/Chinese/Arabic word order handled above.
-        rf"({_APP_NAMES_PATTERN}|{_FOREIGN_APP_ALIASES_PATTERN}).*{_MULTI_OPEN_SCRIPT}",
-    ]),
-    ("file_open", [
-        r"\bopen\b.*\b(the\s+)?(file|folder|directory)\b",
-        r"\bshow\s+me\b.*\b(the\s+)?file\b",
-        r"\bopen\b.*\bmy\s+(downloads?|desktop|documents?)\b",
-        r"\bopen\b.*\.(txt|pdf|docx?|xlsx?|pptx?|csv|jpe?g|png|py|js|json|md|zip|rtf)\b",
-        rf"\b({_MULTI_OPEN})\b.*\b({_MULTI_FILE_FOLDER})\b",
-        rf"({_MULTI_OPEN_SCRIPT}|{_MULTI_OPEN}).*({_MULTI_FILE_FOLDER_SCRIPT})",
-    ]),
-    ("type_text", [
-        r"\btype\b", r"\bwrite this\b", r"\benter this\b", r"\bpaste\b",
-    ]),
-    ("smart_home", [
-        r"\bturn on\b", r"\bturn off\b", r"\blights?\b", r"\bthermostat\b",
-        r"\btemperature\b", r"\bfan\b", r"\bplug\b", r"\bswitch\b",
-        r"\bdim\b", r"\bbrighten\b",
-        rf"\b({_MULTI_TURN_ON})\b", rf"\b({_MULTI_TURN_OFF})\b", rf"\b({_MULTI_LIGHTS})\b",
-        _MULTI_TURN_ON_SCRIPT, _MULTI_TURN_OFF_SCRIPT, _MULTI_LIGHTS_SCRIPT,
-    ]),
-    ("calendar", [
-        r"\bschedule\b", r"\bmeeting\b", r"\bcalendar\b", r"\bappointment\b",
-        r"\bevent\b", r"\bbook\b.*\btime\b",
-        rf"\b({_MULTI_MEETING})\b", _MULTI_MEETING_SCRIPT,
-    ]),
-    ("tasks", [
-        r"\btask\b", r"\bremind me\b", r"\bto[- ]do\b", r"\badd to my list\b",
-        r"\bcomplete\b.*\btask\b", r"\bfinish\b.*\btask\b", r"\blist.*tasks?\b",
-        rf"\b({_MULTI_TASK})\b", _MULTI_TASK_SCRIPT,
-    ]),
-    ("camera_analyze", [
-        r"\bwhat do you see\b", r"\blook at this\b", r"\banalyze this\b",
-        r"\bwhat's in front\b", r"\bwhat am i holding\b", r"\bcamera\b",
-        rf"\b({_MULTI_CAMERA})\b", _MULTI_CAMERA_SCRIPT,
-    ]),
-    ("screen_analyze", [
-        r"\bwhat'?s on (the )?screen\b", r"\bexplain this\b",
-        r"\bwhat am i looking at\b", r"\bread (the )?screen\b",
-        r"\bscreen\b",
-        rf"\b({_MULTI_SCREEN})\b", _MULTI_SCREEN_SCRIPT,
-    ]),
-]
+_app_open_skill.patterns.extend([
+    rf"\bopen\b.*\b({_APP_NAMES_PATTERN})\b",
+    rf"\b({_MULTI_OPEN})\b.*\b({_APP_NAMES_PATTERN}|{_FOREIGN_APP_ALIASES_PATTERN})\b",
+    # No \b around the app name here (unlike the bounded pattern above):
+    # a script-language open verb (e.g. Chinese 打开) is very often
+    # written with NO space before the app name that follows it, so the
+    # position right after the verb has no \w/non-\w transition — \b
+    # would silently fail to match there. Safe to drop: this pattern
+    # only fires at all when a non-Latin trigger verb is present, which
+    # never spontaneously appears inside ordinary English/Spanish/French
+    # text, so there's no new false-positive surface from removing it.
+    rf"{_MULTI_OPEN_SCRIPT}.*({_APP_NAMES_PATTERN}|{_FOREIGN_APP_ALIASES_PATTERN})",
+    # Object-before-verb order: several supported languages (Hindi,
+    # Japanese, Telugu, Korean) are SOV — "कैलकुलेटर खोलो" literally reads
+    # "calculator open", app name before the verb — the reverse of
+    # English/Spanish/French/Chinese/Arabic word order handled above.
+    rf"({_APP_NAMES_PATTERN}|{_FOREIGN_APP_ALIASES_PATTERN}).*{_MULTI_OPEN_SCRIPT}",
+])
 
 
 def classify_intent(text: str) -> str:
@@ -238,14 +132,20 @@ def classify_intent(text: str) -> str:
     Return the best-matching intent string for *text*.
     Falls back to "direct_answer" if no pattern matches.
 
-    "calculate" is checked FIRST, ahead of even the conversational guard:
-    extract_math_expression() is strict enough (requires actual digits +
-    an operator/function, and excludes phone-number/date-shaped text) that
-    it never spuriously fires on personal/chitchat text like "what is my
-    name" (no digits) or "how much is 5 years in days" (no operator) — so
-    checking it first is safe and is what lets genuine arithmetic like
-    "how much is 100*5" reach the calculator instead of being swallowed by
-    the "how much (is|are)" conversational override below.
+    Skill-driven: iterates the Skill objects loaded from
+    backend/skills/*.SKILL.md instead of a hardcoded Python list, but the
+    matching MECHANISM (`re.search`, first match by priority order wins) is
+    unchanged from the original hardcoded classifier.
+
+    "calculate" (the one `trigger_type: function` skill) is checked FIRST,
+    ahead of even the conversational guard: extract_math_expression() is
+    strict enough (requires actual digits + an operator/function, and
+    excludes phone-number/date-shaped text) that it never spuriously fires
+    on personal/chitchat text like "what is my name" (no digits) or "how
+    much is 5 years in days" (no operator) — so checking it first is safe
+    and is what lets genuine arithmetic like "how much is 100*5" reach the
+    calculator instead of being swallowed by the "how much (is|are)"
+    conversational override below.
 
     After that, conversational / personal phrases are checked so they never
     accidentally trigger a different tool (e.g. "what is my name" must not
@@ -253,21 +153,25 @@ def classify_intent(text: str) -> str:
     """
     lower = text.lower()
 
-    # ── Step 1: calculate — real arithmetic, never left to the LLM ──────────
-    from tools.calculator import extract_math_expression
-    if extract_math_expression(text) is not None:
-        return "calculate"
+    # ── Step 1: function-triggered skills (currently just "calculate") ──────
+    for skill in _SKILLS:
+        if skill.trigger_type == "function":
+            trigger_fn = skill.resolve_trigger_fn()
+            if trigger_fn(text) is not None:
+                return skill.id
 
     # ── Step 2: conversational guard ────────────────────────────────────────
     for pattern in _CONVERSATIONAL_OVERRIDES:
         if re.search(pattern, lower):
             return "direct_answer"
 
-    # ── Step 3: tool intent matching ─────────────────────────────────────────
-    for intent, patterns in _INTENT_PATTERNS:
-        for pattern in patterns:
+    # ── Step 3: regex-triggered skills, in priority order ───────────────────
+    for skill in _SKILLS:
+        if skill.trigger_type != "regex":
+            continue
+        for pattern in skill.patterns:
             if re.search(pattern, lower):
-                return intent
+                return skill.id
 
     return "direct_answer"
 
@@ -461,6 +365,114 @@ async def _run_calculate_and_narrate(
     return fallback
 
 
+# ── Datetime — real system-clock facts, LLM only narrates ────────────────────
+# Same shape as _run_calculate_and_narrate above: tools/datetime_tool.py
+# computes the real answer (current date/time from the local system clock,
+# or a real day-count via dateparser), the LLM is told the exact fact and
+# told to narrate it, its response is checked for grounding anchors, and it
+# gets one forceful retry before falling back to a guaranteed-correct
+# template. The one deliberate difference from calculate's verification:
+# see tools/datetime_tool.py's get_current_datetime_fact() docstring for why
+# it checks digit-only anchors rather than an exact string match.
+
+async def _run_datetime_and_narrate(
+    text: str,
+    session_id: str,
+    mode: str,
+    language_code: str,
+    user_name: str,
+) -> Optional[str]:
+    from tools.datetime_tool import (
+        days_until,
+        extract_days_until_target,
+        get_current_datetime_fact,
+    )
+
+    target = extract_days_until_target(text)
+
+    if target is not None:
+        calc = days_until(target)
+        if not calc["success"]:
+            error = calc["error"] or "I couldn't work that out."
+            response = (
+                f"I couldn't determine that, sir: {error}"
+                if mode == "professional"
+                else f"Hmm, I couldn't figure that out: {error}"
+            )
+            memory.add_message(session_id, "user", text)
+            memory.add_message(session_id, "assistant", response)
+            return response
+
+        days, target_date = calc["days"], calc["target_date"]
+        if days == 0:
+            fact = f"today, {target_date}"
+        elif days == 1:
+            fact = f"tomorrow, {target_date}"
+        elif days > 0:
+            fact = f"{days} days from now, on {target_date}"
+        else:
+            fact = f"{abs(days)} days ago, on {target_date}"
+        anchors = calc["anchors"]
+    else:
+        fact, anchors = get_current_datetime_fact()
+
+    augmented_prompt = (
+        f"User's date/time question: {text}\n\n"
+        f"The exact, authoritative answer (from the real system clock, not "
+        f"your training data) is: {fact}. State this accurately in your "
+        f"own natural voice. You must include the digits "
+        f"{' and '.join(anchors)} somewhere in your response, unmodified, "
+        f"as confirmation you used the real value provided above rather "
+        f"than guessing."
+    )
+
+    def _grounded(response: str) -> bool:
+        return all(anchor in response for anchor in anchors)
+
+    narrated = await brain.generate(
+        prompt=augmented_prompt,
+        session_id=session_id,
+        mode=mode,
+        language_code=language_code,
+        user_name=user_name,
+    )
+    if _grounded(narrated):
+        return narrated
+
+    log.warning(
+        "Datetime: LLM response did not contain grounding anchors %r for "
+        "fact %r — retrying once with a more forceful prompt.",
+        anchors, fact,
+    )
+    forceful_prompt = (
+        f"User's date/time question: {text}\n\n"
+        f"The exact, authoritative answer is: {fact}. You MUST include the "
+        f"exact digits {' and '.join(anchors)} somewhere in your response, "
+        f"unmodified. This is a hard requirement, not a suggestion."
+    )
+    retried = await brain.generate(
+        prompt=forceful_prompt,
+        session_id=session_id,
+        mode=mode,
+        language_code=language_code,
+        user_name=user_name,
+    )
+    if _grounded(retried):
+        return retried
+
+    log.warning(
+        "Datetime: LLM still omitted grounding anchors %r for fact %r "
+        "after retry — using guaranteed-correct template fallback.",
+        anchors, fact,
+    )
+    fallback = (
+        f"It's {fact}, sir." if mode == "professional" else f"It's {fact}!"
+    )
+    memory.add_message(session_id, "user", text)
+    memory.add_message(session_id, "assistant", fallback)
+    return fallback
+
+
 def _detect_screen_context(ocr_text: str) -> str:
     """Heuristically guess what type of content is on screen."""
     lower = ocr_text.lower()
@@ -503,72 +515,94 @@ async def run_agent(
     intent = classify_intent(text)
     log.info("Intent: %s for session %s", intent, session_id)
 
-    # ── calculate: real Python arithmetic, LLM only narrates (never computes) ──
-    # Handled separately from the generic tool_result -> single brain.generate()
-    # flow below, since it needs its own verify-and-retry loop around the LLM
-    # call (see _run_calculate_and_narrate's module-level comment for why).
-    if intent == "calculate":
-        calc_response = await _run_calculate_and_narrate(
+    # ── Durable vault: record this turn on every return path below ─────────────
+    # Centralized here (not duplicated in chat.py/voice.py) since /chat, /voice,
+    # and the wake-word follow-up capture all funnel through run_agent(). Never
+    # raises — vault.record_turn() self-guards, so a vault write failure can
+    # never break a chat response.
+    def _record(response: str) -> str:
+        vault.record_turn(
+            session_id=session_id,
+            user_message=text,
+            user_language=language_code,
+            assistant_response=response,
+            mode=mode,
+            intent=intent,
+        )
+        return response
+
+    # ── Cross-session recall: cheap, scoped, gated on short in-session history ─
+    # Only bother looking up the vault when this session doesn't already have
+    # real context (a fresh session, or one that's barely started) — matches
+    # "new session or insufficient context" from the design, and doubles as
+    # the performance cap (skipped entirely on any session with real history).
+    vault_context = ""
+    if len(memory.get_history(session_id)) < 2:
+        vault_context = vault.get_context_for_query(text)
+
+    # ── requires_grounding skills: handler owns its full response ──────────────
+    # "calculate" is the only skill with this flag today, but the check is
+    # generic (any future skill needing the same verify/retry/template-
+    # fallback anti-hallucination pattern can reuse it by setting the flag —
+    # see _run_calculate_and_narrate's module-level comment for what that
+    # pattern actually does). Handled separately from the generic
+    # tool_result -> single brain.generate() flow below, and deliberately
+    # NOT given vault_context — its prompt is tightly controlled for the
+    # grounding safeguard and must not be perturbed by extra context.
+    grounded_skill = _SKILLS_BY_ID.get(intent)
+    if grounded_skill is not None and grounded_skill.flags.get("requires_grounding"):
+        grounding_handler = grounded_skill.resolve_handler()
+        grounded_response = await grounding_handler(
             text, session_id, mode, language_code, user_name,
         )
-        if calc_response is not None:
-            return calc_response
+        if grounded_response is not None:
+            return _record(grounded_response)
         # Extraction unexpectedly failed after classify_intent() already
         # confirmed it would succeed — fall through to a normal
         # direct_answer rather than forcing a calculator response.
         intent = "direct_answer"
 
     tool_result: str | None = None
+    dispatch_skill = _SKILLS_BY_ID.get(intent)
 
     try:
-        if intent == "web_search":
-            tool_result = await _run_web_search(text)
-
-        elif intent == "browser_open":
-            tool_result = await _run_browser_open(text)
-
-        elif intent == "app_open":
-            tool_result = await _run_app_open(text)
-
-        elif intent == "file_open":
-            tool_result = await _run_file_open(text)
-
-        elif intent == "type_text":
-            tool_result = await _run_type_text(text)
-
-        elif intent == "smart_home":
-            tool_result = await _run_smart_home(text, session_id)
-
-        elif intent == "calendar":
-            tool_result = await _run_calendar(text, session_id)
-
-        elif intent == "tasks":
-            tool_result = await _run_tasks(text, session_id)
-
-        elif intent == "camera_analyze":
-            tool_result = await _run_camera_analyze(text, session_id, language_code)
-
-        elif intent == "screen_analyze":
-            tool_result = await _run_screen_analyze(text, session_id, language_code)
-
-        # direct_answer falls through — tool_result stays None
+        if dispatch_skill is not None:
+            handler_fn = dispatch_skill.resolve_handler()
+            # Every handler function takes a PREFIX of (text, session_id,
+            # language_code), in that exact order, as positional arguments —
+            # e.g. _run_web_search(text), _run_smart_home(text, session_id),
+            # _run_camera_analyze(question, session_id, language_code=...).
+            # Dispatching by POSITION (not by matching parameter names)
+            # reproduces every original hardcoded call site exactly, even
+            # where a handler's first parameter isn't literally named
+            # "text" (camera/screen name it "question").
+            positional_context = (text, session_id, language_code)
+            param_count = len(inspect.signature(handler_fn).parameters)
+            tool_result = await handler_fn(*positional_context[:param_count])
+        # direct_answer (no matching skill) falls through — tool_result stays None
 
     except Exception as err:
         log.error("Tool execution failed for intent %s: %s", intent, err)
         tool_result = f"Tool encountered an issue: {err}"
 
-    # ── app_open / file_open are returned verbatim — never paraphrased ────────
+    # ── verbatim_response skills are returned as-is — never paraphrased ───────
     # tools.app_control.open_app_from_command()/open_file_from_command()
     # already return a precise, human-readable outcome ("Launching X." /
     # "Could not launch X: <error>" / "Opening X." / "File not found: X").
     # Routing that through brain.generate() for a "natural language" rewrite
     # is exactly what let the LLM fabricate a fake success narrative for apps
-    # (or files) it never actually opened — so for these intents the tool's
-    # own return value IS the response, with no LLM step in between.
-    if intent in ("app_open", "file_open") and tool_result is not None:
+    # (or files) it never actually opened — so for these skills the tool's
+    # own return value IS the response, with no LLM step in between. Today
+    # only app_open/file_open set this flag, but any future skill can opt in
+    # the same way.
+    if (
+        dispatch_skill is not None
+        and dispatch_skill.flags.get("verbatim_response")
+        and tool_result is not None
+    ):
         memory.add_message(session_id, "user", text)
         memory.add_message(session_id, "assistant", tool_result)
-        return tool_result
+        return _record(tool_result)
 
     # Build the prompt for the LLM
     if tool_result is not None:
@@ -581,10 +615,13 @@ async def run_agent(
     else:
         augmented_prompt = text
 
-    return await brain.generate(
+    if vault_context:
+        augmented_prompt = f"{vault_context}\n\n{augmented_prompt}"
+
+    return _record(await brain.generate(
         prompt=augmented_prompt,
         session_id=session_id,
         mode=mode,
         language_code=language_code,
         user_name=user_name,
-    )
+    ))

@@ -1,6 +1,6 @@
 # ULTRON — Audit Report
 
-Last updated: 2026-08-04
+Last updated: 2026-08-06
 Project location: `D:\Ultron_V2\ultron_v2`
 
 This is the single, canonical audit report for the ULTRON project. It consolidates three
@@ -1372,6 +1372,356 @@ Work — not part of this loop.
 **Verification:** `pytest -q` — `232 passed, 2 skipped` — identical to every prior pass in this saga,
 confirming the fix set landed with zero regressions across the whole run, not just the WebSocket/voice
 surface touched by entries 14-15.
+
+### 17. 2026-08-06 — Two foundational architecture additions: persistent markdown memory vault + declarative skills system
+
+Two related but separable pieces of new architecture, both built, tested, and documented in this
+pass: (1) a durable, Obsidian-compatible markdown memory vault replacing session-only recall, and (2)
+a declarative `SKILL.md` file system replacing `core/agent.py`'s hardcoded regex intent
+classification. **Baseline confirmed before any change:** `232 passed, 2 skipped` in 12.6s — matching
+the number every prior pass in this log has converged on. Zero regressions tolerated for this pass,
+given how many dedicated fix passes (entries 2, 9, and others above) it took to get the multilingual
+intent coverage and the anti-hallucination safeguards right in the first place.
+
+**Part 1 — Memory vault (`backend/vault/`, `backend/core/vault.py`).**
+
+- Structure: `raw/` (one markdown file per calendar day, not per session — the idiomatic Obsidian
+  daily-note convention, avoids sprawling into hundreds of tiny per-session files, stays trivially
+  browsable chronologically), `wiki/` (one note per notable entity, real `[[wikilink]]`
+  cross-references both directions), `outputs/` (reserved, empty today).
+- **Gitignore ordered first, verified before any file was written:** `backend/vault/` added to the
+  root `.gitignore`, then confirmed with a real `git check-ignore -v` call against three vault paths
+  before `core/vault.py` was even written — not just checking the `.gitignore` file contains the
+  string.
+- Entity extraction is a deliberate, disclosed pragmatic heuristic — plain regex Title-Case
+  proper-noun detection (1-3 word sequences), capped at 5 per turn, filtered by a small stopword list
+  AND a sentence-initial-position check. No LLM side-call, no real NLP. **A real bug was caught and
+  fixed during this pass:** the first version extracted entities from a single
+  `f"{user_message}\n{assistant_response}"` string, and Python's `\s+` matches newlines, so a
+  multi-word Title-Case match could bridge across the user/assistant boundary (e.g. "...next Friday" +
+  "Noted, sir..." produced a bogus two-word entity "Friday\nNoted", which then crashed the file-write
+  with an embedded-newline filename). Fixed by extracting per-segment and merging, plus restricting the
+  regex's internal whitespace to `[ \t]+` (never newlines) as defence in depth. A second false-positive
+  class was also caught live: ordinary Spanish sentence-starters ("Hola, ...", "Todo bien...") were
+  being extracted as bogus entities purely from capitalization — fixed with a sentence-initial-position
+  filter (single-word candidates at the start of a sentence are dropped unless they recur mid-sentence
+  elsewhere; multi-word phrases are always kept). **A third bug in this same area was caught live,
+  after the pytest suite already passed**, doing a real (not mocked) `Vault.record_turn()` call
+  against the actual default vault path as evidence for this report: "The OweWise project is
+  progressing well, sir." produced TWO wiki notes, `OweWise.md` and a bogus duplicate
+  `The_OweWise.md` — the multi-word-phrase exemption let "The OweWise" through as its own two-word
+  entity. Fixed by stripping a leading stopword from a multi-word match ("The OweWise" → "OweWise")
+  instead of either keeping or discarding the whole match, with a regression test added
+  (`test_entity_extraction_strips_leading_article_not_whole_phrase`) — exactly the kind of thing
+  pytest's fixed input set didn't happen to exercise, and the reason this pass generated real live
+  evidence rather than stopping at "tests pass."
+- **A fourth bug was caught the same way, one level deeper: starting the real backend fresh (not a
+  test) and sending one real `/chat` message.** This was done specifically to answer the question "is
+  vault directory creation lazy or eager" with live evidence, not just code inspection — confirmed
+  `backend/vault/` does not exist after full `main.py` lifespan startup completes (nothing in startup
+  calls `vault._ensure_dirs()` or `record_turn()`), and DOES appear, fully populated
+  (`raw/`, `wiki/`, `outputs/`), immediately after the first real `/chat` turn — directory creation is
+  correctly lazy, driven entirely by `Vault.record_turn()`. That same live call surfaced the fix
+  above's own side effect: "Hello Ultron, what is your status?" produced a bogus `wiki/Ultron.md` —
+  the entity-extraction pattern matched "Hello Ultron" as ONE multi-word candidate, stripped the
+  leading stopword "Hello", and the remainder "Ultron" (itself deliberately in the stopword list, so
+  the AI doesn't fill its own wiki with self-references) skipped the stopword check entirely, because
+  that check had been gated on `not stripped_any` instead of applying unconditionally. Fixed by
+  splitting the two checks apart: the stopword check now always applies to a single-word result
+  regardless of whether stripping occurred; only the sentence-initial-position check is skipped after
+  a strip. New regression test:
+  `test_entity_extraction_leading_word_strip_does_not_bypass_stopword_check`. Final count: `260
+  passed, 2 skipped`.
+- Cross-session recall (`Vault.get_context_for_query()`) is scoped and cheap by design: it lists
+  `wiki/*.md` filenames and does case-insensitive substring containment against the query — it never
+  does a full-text scan of `raw/`. Gated in `core/agent.py`'s `run_agent()` on short in-session history
+  (`len(memory.get_history(session_id)) < 2`), so it only fires on a genuinely new/thin session, and is
+  never injected into `calculate`'s tightly-controlled grounding prompt or the verbatim `app_open`/
+  `file_open` paths (no LLM call happens there at all).
+- Real evidence — a live `Vault.record_turn()` call against an isolated temp root produced:
+  ```
+  # 2026-08-06
+
+  ## 13:59:00 — Session `abc12345`
+
+  **User** (es): Hola, ¿qué tal, OweWise?
+
+  **Ultron** (professional): Todo bien, sir. OweWise está funcionando correctamente.
+
+  *Intent: direct_answer*
+  Related: [[OweWise]]
+
+  ---
+  ```
+  and `wiki/OweWise.md`:
+  ```
+  # OweWise
+
+  *Auto-tracked by ULTRON's memory vault.*
+
+  ## Mentions
+
+  - **2026-08-06 13:59** (session `abc12345`) — mode: professional — "Hola, ¿qué tal, OweWise?" → [[2026-08-06]]
+  ```
+  Note `Hola`/`Todo` did NOT get extracted as spurious entities — the sentence-initial filter fix
+  holds.
+- Test isolation: an autouse, session-scoped `conftest.py` fixture repoints the module-level `vault`
+  singleton at a `tmp_path_factory` directory for the entire suite, so none of the 200+ existing tests
+  that exercise `/chat`/`/voice`/`run_agent()` ever touch the real `backend/vault/`. Confirmed directly
+  after a full suite run: `backend/vault/` did not exist on disk afterward.
+- New tests: `tests/test_25_vault.py`, 14 tests — raw file creation/naming, wiki note
+  creation/cross-linking, the two false-positive-filter regressions above, dedup, cross-session recall
+  (write via one `Vault` instance, read via a second fresh instance pointed at the same root — proving
+  it survives a simulated restart), scoped-lookup-not-full-scan, markdown structural validity, and a
+  real `git check-ignore -q backend/vault/...` subprocess call against the actual repo.
+
+**Part 2 — Declarative skills system (`backend/skills/`, `backend/skills/loader.py`).**
+
+- 12 `*.SKILL.md` files: the 10 intents named in this task's brief (`web_search`, `browser_open`,
+  `app_open`, `file_open`, `smart_home`, `calendar`, `tasks`, `camera_analyze`, `screen_analyze`,
+  `calculate`) plus 2 more found live in `core/agent.py` during migration and preserved rather than
+  silently dropped: `type_text` (an 11th working intent not mentioned in the brief) and `mode_switch`
+  (`api/routes/chat.py`'s tone-switch detector, migrated to the same format even though it isn't part
+  of `core/agent.py`'s classifier).
+- **Every regex pattern ported byte-for-byte** from `core/agent.py`'s `_INTENT_PATTERNS` and
+  `chat.py`'s `_MODE_SWITCH_PATTERNS` — including the legacy code's own multi-language alternation
+  groupings (e.g. `web_search`'s Latin-script group matches English/Spanish/French/German in one
+  regex), preserved as-is rather than "cleaned up" into one-language-per-pattern, since splitting a
+  shared alternation risks changing which strings match at the edges for zero benefit.
+- **Priority-based ordering is the safety-critical part.** The legacy list's order determined which
+  intent won when text could match more than one pattern group; directory-listing order is NOT
+  alphabetically equivalent (alphabetical would reorder `app_open` before `browser_open` before
+  `calendar`...), so every intent skill carries an explicit `priority:` reproducing the exact legacy
+  sequence (web_search=10 ... screen_analyze=100), verified by `test_26_skills_loader.py`.
+- **The one disclosed dynamic-pattern exception:** `app_open`'s classification depends on
+  `tools.app_control.APP_MAP`, a live Python dict — hardcoding the current app list into static YAML
+  would reintroduce the exact "classifier and app map can drift apart" bug the original multilingual
+  fix pass (entry 9) eliminated. `app_open.SKILL.md` holds only its 2 genuinely static patterns;
+  `core/agent.py` still appends 4 more, built from `APP_MAP` at import time, exactly as before —
+  verified by `test_app_open_skill_gains_dynamic_app_name_patterns_via_agent_import`.
+- **Both anti-hallucination safeguards generalized into flags, not hardcoded string checks:**
+  `flags.verbatim_response` (was `if intent in ("app_open", "file_open")`) and
+  `flags.requires_grounding` (was `if intent == "calculate"`) — `calculate`'s exact verify/retry/
+  template-fallback function body (`_run_calculate_and_narrate`) is unchanged Python, just now invoked
+  via a flag check instead of a string comparison, so any future skill needing the same safety pattern
+  can opt in without an `agent.py` code change.
+- Handler dispatch is by **position**, not by matching parameter names, since existing handler
+  functions don't share a uniform signature (`_run_web_search(text)` vs.
+  `_run_camera_analyze(question, session_id, language_code)` — note the parameter name difference).
+  `run_agent()` calls `handler(*(text, session_id, language_code)[:param_count])`, which reproduces
+  every original hardcoded call site exactly regardless of parameter naming.
+- **Real before/after regression evidence, not just "tests pass":** a 48-case snapshot of
+  `classify_intent()` spanning English, Spanish, Hindi, French, German, Korean, Japanese, Chinese, and
+  Arabic was captured immediately before touching `agent.py`, then re-run after the full refactor and
+  diffed programmatically — `PARITY: EXACT MATCH`, 0 mismatches across all 48 cases.
+- New tests: `tests/test_26_skills_loader.py`, 12 tests — exact skill count/ids, priority-order
+  reproduction, handler/trigger_fn resolution against the real `core.agent`/`tools.calculator` modules,
+  flag correctness, the dynamic app-name-pattern append, the full 31-entry `mode_switch` pattern list
+  (order and per-target counts) matching the original `_MODE_SWITCH_PATTERNS` exactly, and two
+  fail-loud tests confirming a malformed `SKILL.md` raises at load time rather than being silently
+  skipped.
+
+**Test count progression across this pass, run after every stage per the task's explicit
+instruction, not just once at the end:**
+
+| Stage | Result |
+|---|---|
+| Baseline (before any change) | `232 passed, 2 skipped` |
+| After vault wiring, before dedicated vault tests | `232 passed, 2 skipped` (unchanged — vault hooks are additive) |
+| After `tests/test_25_vault.py` added | `246 passed, 2 skipped` |
+| After `core/agent.py` skills refactor | `246 passed, 2 skipped` (unchanged — confirms zero regression from the refactor alone) |
+| After `api/routes/chat.py` mode_switch refactor | `246 passed, 2 skipped` (unchanged) |
+| After `tests/test_26_skills_loader.py` added | `258 passed, 2 skipped` |
+| After the live-evidence-caught leading-stopword entity bug fix + its regression test | `259 passed, 2 skipped` |
+| After starting the real backend fresh, sending one real `/chat` message, and fixing the stopword-bypass bug that call surfaced | `260 passed, 2 skipped` (final) |
+
+`test_23_multilingual_intent.py` (the 40-test suite protecting the 9-language tool-intent coverage)
+and `test_20_calculator.py` (the calculator grounding safeguard) both re-ran unmodified at every stage
+and passed throughout — the file contents of both were not touched by this migration at all, which is
+itself part of the regression evidence: if the skill-file port had dropped or altered any pattern,
+these pre-existing tests (written independently of this migration, in an earlier fix pass) would have
+caught it.
+
+**Documentation:** `backend/README.md` gained "11. Memory vault" and "12. Skills system" sections;
+`backend/skills/README.md` is new — the SKILL.md format reference with a fully-documented example
+(`web_search.SKILL.md`).
+
+### 18. 2026-08-06 — Two entity-extraction quality bugs found via real Obsidian usage, fixed
+
+Found by opening the real vault in Obsidian after a real conversation about the 2026 FIFA World Cup
+(not a synthetic test) — the vault built in entry 17 correctly captured the conversation, but its
+entity extraction had two quality bugs, both fixed in this pass with real before/after evidence from
+the actual affected files.
+
+**Bug 1 — "Yet" extracted as a junk entity.** Ultron's response ended with the standalone italicized
+fragment `*Yet.*`. Root cause, found by tracing `_extract_entities()`: the entity regex correctly
+skips `*` via its `\b` word boundaries, so it found "Yet" fine — but `_is_sentence_initial()` checks
+the character immediately preceding a match, and `*` isn't a whitespace char or a sentence terminator
+(`.!?¿¡\n`), so a markdown-wrapped fragment like `*Yet.*` didn't register as sentence-initial even
+though it obviously is one. "Yet" also simply wasn't in `_ENTITY_STOPWORDS` at all. **Fixed two ways**
+(defense in depth, not redundant): (1) a new `_MARKDOWN_EMPHASIS` regex (matching runs of `*`, `_`,
+and backtick characters) neutralizes markdown emphasis markers by replacing them with a space — length-preserving, so match offsets used by the
+sentence-initial check stay aligned — applied once at the top of `_extract_entities()`; (2)
+`_ENTITY_STOPWORDS` gained ~55 discourse-marker/sentence-adverb words (Yet, However, Also, Still,
+Actually, Meanwhile, Indeed, Finally, Therefore, ...) that are near-never proper nouns regardless of
+sentence position, as a backstop independent of the position check. **Explicitly did NOT add a
+dictionary-word lookup** (the task's third suggested option) — that would need a bundled wordlist
+dependency for marginal extra precision over the two fixes above, which is real over-engineering for
+a heuristic meant to stay pragmatic; documented as a deliberate non-fix in `_extract_entities()`'s
+docstring.
+
+**Bug 2 — "United_States" / "FIFA_World_Cup" filenames had underscores instead of spaces.**
+`_safe_filename()` unconditionally did `.replace(" ", "_")` on every multi-word entity — this affected
+BOTH multi-word entities from the real conversation equally (`United_States.md` AND
+`FIFA_World_Cup.md`), not just one; the apparent inconsistency the task description was investigating
+turned out to be an Obsidian rendering artifact of the same single root cause, not two different code
+paths: every wikilink and note title used the raw entity text with real spaces (`[[United States]]`,
+`# United States`), so a link to a file whose actual name was underscored never resolved — Obsidian
+showed it as a phantom/unresolved node, while the real (oddly-named) file sat as its own separate,
+underscore-labeled resolved node next to it. Confirmed via the actual files in `backend/vault/wiki/`
+before touching any code (see evidence below), and confirmed no wikilink anywhere in the vault used the
+underscored form (`grep` across the whole vault directory), meaning the fix is a strict improvement
+with no other references to update. **Fixed** by removing the space-to-underscore substitution
+entirely — NTFS/Windows handles spaces in filenames fine, and keeping them means filename == title ==
+wikilink text everywhere, consistently (the "pick one approach, apply uniformly" option from the task,
+and the simpler of the two given Windows doesn't actually require underscoring).
+
+**Existing corrupted files — renamed, not left as-is.** `backend/vault/wiki/FIFA_World_Cup.md` and
+`United_States.md` were renamed to `FIFA World Cup.md`/`United States.md` (confirmed safe first: the
+vault is gitignored, this was very early/low-volume real usage — exactly 2 affected files — and no
+wikilink anywhere referenced the old underscored names, so renaming could only fix broken references,
+never break a working one). `backend/vault/wiki/Yet.md` (the junk entity note itself, zero
+informational value) was deleted. **`backend/vault/raw/2026-08-06.md` — the actual conversation
+transcript — was deliberately left untouched**, including its historical `Related: [[..., [[Yet]]`
+line: that raw log is an append-only historical record, not something to retroactively edit; a leftover
+unresolved `[[Yet]]` link in one old entry is harmless and, if anything, an honest reflection that
+"Yet" was never a tracked entity.
+
+**Real before/after evidence, from the actual `backend/vault/` on disk (not a synthetic repro):**
+
+Before (files that existed after the real FIFA conversation, before this fix):
+```
+vault/wiki/Canada.md
+vault/wiki/FIFA_World_Cup.md      ← underscored
+vault/wiki/Mexico.md
+vault/wiki/United_States.md       ← underscored
+vault/wiki/Yet.md                 ← junk entity
+```
+
+After (same directory, after the fix + cleanup):
+```
+vault/wiki/Canada.md
+vault/wiki/FIFA World Cup.md      ← space, matches its own title/every wikilink
+vault/wiki/Mexico.md
+vault/wiki/United States.md       ← space, matches its own title/every wikilink
+(Yet.md removed)
+```
+
+Re-running the exact real conversation text through `_extract_entities()` directly:
+```python
+>>> v._extract_entities("Sir, the 2026 FIFA World Cup has not yet been played. It is scheduled to "
+...                      "be held across the United States, Canada, and Mexico in the summer of "
+...                      "2026.\n\nI am many things, but a time traveler is not one of them. *Yet.*")
+['FIFA World Cup', 'United States', 'Canada', 'Mexico']   # was: [..., 'Yet'] with underscored filenames
+```
+
+**Scope confirmation (not a fix):** the task asked whether entity extraction scanning BOTH the user's
+message and Ultron's response (not just the user's side) is intended design or an accidental side
+effect — confirmed intended and now stated explicitly in `core/vault.py`'s module docstring: Ultron's
+own responses usually carry the actual substantive facts worth remembering (every entity in the FIFA
+example — United States, Canada, Mexico, FIFA World Cup — came from Ultron's answer, not the user's
+question), so scanning only the user's side would miss most of what's actually worth cross-linking.
+
+**Live re-verification, real backend, real second conversation (not just the original FIFA
+conversation being fixed retroactively):** started the actual backend fresh, sent
+`"Where will the 2026 World Cup opening ceremony be held?"` through the real `/chat` endpoint. Real
+response: *"The 2026 FIFA World Cup opening match is set to take place at **Estadio Azteca** in Mexico
+City, sir. A venue with history..."* — deliberately chosen to also test that markdown-stripping doesn't
+over-suppress legitimate content: `**Estadio Azteca**` (bold markdown around a real proper noun) needed
+to survive extraction. Real files created: `wiki/Estadio Azteca.md`, `wiki/Mexico City.md`,
+`wiki/World Cup.md` — all space-named, no underscores, no junk entities, `Estadio Azteca` correctly
+extracted with its `**` markers stripped. This data was deliberately left in the real vault (not
+cleaned up, unlike the throwaway synthetic tests from entry 17) so it can be inspected directly in
+Obsidian.
+
+**Testing:** 8 new tests in `tests/test_25_vault.py` — the exact real FIFA text end-to-end, 5
+parametrized sentence-starter-fragment cases ("But that's not all.", "So there's that.", "However,
+...", "Still, ...", "Actually, ..."), markdown-emphasis stripping (both the junk-suppression case and
+the legitimate-bold-entity-survives case), and a full `record_turn()`-to-real-files check confirming
+the exact wiki filename set. All three previously-established edge cases re-verified unchanged:
+`"Hello Ultron..."` → `[]`, `"The OweWise project..."` → `["OweWise"]`, `"...New York..."` →
+`["New York"]`. Full suite: `268 passed, 2 skipped` (up from entry 17's `260 passed, 2 skipped`),
+zero regressions.
+
+### 19. 2026-08-06 — Fixed "what is today's date" / "what time is it" refusals — zero external API, local system clock only
+
+**The gap:** asking Ultron "what is today's date" or "what time is it" got a generic refusal —
+*"I don't have access to real-time data, including today's date."* Diagnosed first, not assumed:
+`core/prompt_manager.py`'s `build_system_prompt()` never injected any date/time fact into the system
+prompt at all, so the refusal was the LLM correctly (from its own perspective) admitting it has no live
+clock and a training-data cutoff. `backend/skills/` had no datetime-related skill from the recent
+skills migration — the closest existing logic was `tools/calendar_tasks.py`'s `_parse_time()`, which
+already wraps `dateparser` (already a `requirements.txt` dependency) for natural-language time
+expressions used by the (Google-credentials-gated) calendar/tasks features — reused here rather than
+adding a second date-parsing dependency.
+
+**Fix — two complementary layers, both built, matching the task's explicit request:**
+
+1. **System prompt injection (`core/prompt_manager.py`).** Every `build_system_prompt()` call now
+   appends `"Current date and time: {real datetime.now(), formatted naturally}. ... never claim you
+   don't have access to the current date or time, you do."` — pure local system clock
+   (`datetime.now()`), zero API calls, zero latency, works fully offline. This alone fixes the casual
+   case for any conversation, since it's now a known fact in every request's context rather than
+   something to guess or refuse.
+2. **Dedicated `datetime` skill (`backend/skills/datetime.SKILL.md`, `tools/datetime_tool.py`,
+   `core/agent.py`'s new `_run_datetime_and_narrate`)** for higher-precision/verified queries — same
+   anti-hallucination grounding pattern already established for `calculate`: the real computed fact
+   (from `datetime.now()`, or a real day-count via `dateparser` for "how many days until Friday") is
+   injected into the prompt as an authoritative value the LLM must state, its response is checked for
+   grounding, retried once if it drifts, and falls back to a guaranteed-correct template if it still
+   drifts. `priority: 5` — deliberately checked BEFORE `web_search` (`priority: 10`), because
+   `web_search.SKILL.md`'s own `\bwhat is the (current|latest|recent|today'?s|live)\b` pattern would
+   otherwise swallow "what is the current time" and route it to a web search instead of the local
+   clock; confirmed via a direct `classify_intent()` collision test.
+   - **One deliberate deviation from `calculate`'s verification, disclosed in both the skill file and
+     `tools/datetime_tool.py`:** `calculate` checks for the exact numeric result string, which is
+     language-neutral. A fully formatted date isn't — day/month NAMES are English words, but the
+     system prompt forces the response into whatever language was detected, so demanding the literal
+     word "Thursday" survive inside a Spanish response would be unreasonable. Verification here
+     instead checks digit-only anchors (year, day-of-month) — those *are* language-neutral.
+   - **A real bug this design caught during its own test-writing, before it ever reached a human:**
+     the first version anchored the "how many days until X" case on the days-COUNT number itself
+     (e.g. `"1"`). For a 1-day gap the natural fallback phrasing is `"tomorrow, Friday, August 07,
+     2026"` — which never states the digit `"1"` anywhere, so even the *guaranteed-correct* fallback
+     template failed its own grounding check. Fixed by anchoring on digits from the TARGET date
+     instead (year + day-of-month) — those are embedded in every phrasing branch
+     (today/tomorrow/N-days-from-now/N-days-ago) — restoring the actual guarantee.
+
+**Testing:** 31 new tests in `tests/test_27_datetime.py` — intent classification (English + the
+`datetime`-before-`web_search` priority-collision case), 4 false-positive checks for romantic "date"
+phrasing (critical rule from the task — no pattern here ever matches a bare `\bdate\b`), 6 non-English
+classification tests (Spanish ×2, French, German, Hindi, Japanese), direct `tools/datetime_tool.py`
+unit tests, and real `/chat` integration tests mirroring `test_20_calculator.py`'s exact
+mocking/consistency pattern — including a repeated-question consistency test (LLM gives 3 different
+wrong "narrations", every response still contains the real date) and a grounded-narration-accepted
+test (no unnecessary retry when the LLM already got it right). 3 pre-existing
+`tests/test_26_skills_loader.py` assertions were updated (not weakened) to reflect the count going
+from 11 to 12 skills and `requires_grounding` now being set on 2 skills, not 1 — both changes are
+additive, nothing existing was loosened. Full suite: `299 passed, 2 skipped` (up from entry 18's
+`268 passed, 2 skipped`), zero regressions.
+
+**Live verification, real backend, real `/chat` calls (not mocked):**
+
+| Question | Real response | Matches real system clock? |
+|---|---|---|
+| "what is today's date" | *"Today is Thursday, August 6, 2026, 4:31 PM, sir..."* | ✅ (`date` on the host: `Thu Aug 6 16:32:17 2026`) |
+| "what time is it" | *"It is 4:32 PM, sir. Thursday, August 6, 2026, to be precise..."* | ✅ |
+| "how many days until Friday" | *"One day, sir. Tomorrow — Friday, August 7, 2026..."* | ✅ |
+| "I have a date tonight, any advice?" | Real dating advice, no date/time confusion | ✅ false-positive guard holds live, not just in unit tests |
+| "¿Qué hora es?" (Spanish) | *"4:33 PM, August 6, 2026, sir..."* | ✅ — confirms the Spanish trigger pattern classified correctly end-to-end; the response itself came back in English due to a separate, pre-existing short-text language-detection limitation unrelated to this fix (out of scope here — `classify_intent()`-level unit tests already verify the Spanish/French/German/Hindi/Japanese trigger patterns directly, independent of that pipeline) |
+
+Zero refusals across every real call. Before this fix, every one of these would have gotten the
+"I don't have access to real-time data" refusal.
 
 ## Language Support Status
 

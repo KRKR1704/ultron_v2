@@ -40,6 +40,26 @@ from helpers import (  # noqa: F401  (re-exported for backward compat)
 )
 
 
+# ── Vault test isolation ─────────────────────────────────────────────────────
+# Autouse + session-scoped: repoints the module-level `vault` singleton
+# (core/vault.py) at a tmp_path_factory directory for the ENTIRE test run, so
+# the 200+ existing tests that already exercise run_agent()/`/chat`/`/voice`
+# never write into the real backend/vault/ (which holds real personal
+# conversation data) and never slow down. Tests specifically exercising the
+# vault construct their own isolated `Vault(root=tmp_path)` instances instead.
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolated_vault(tmp_path_factory):
+    from core.vault import vault
+
+    test_root = tmp_path_factory.mktemp("vault_root")
+    vault.root = test_root
+    vault.raw_dir = test_root / "raw"
+    vault.wiki_dir = test_root / "wiki"
+    vault.outputs_dir = test_root / "outputs"
+    yield vault
+
+
 # ── Core fixtures ──────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")

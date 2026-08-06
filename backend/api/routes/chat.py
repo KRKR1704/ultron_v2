@@ -22,60 +22,20 @@ from fastapi.responses import JSONResponse
 from api.models import ChatRequest, ChatResponse
 from core.agent import run_agent
 from core.memory import memory
+from core.vault import vault
 from multilingual.language_detector import detect_language_from_text
+from skills.loader import load_mode_switch_skill
 from voice.tts import synthesize
 
 log = logging.getLogger(__name__)
 router = APIRouter()
 
 # ── Mode-switch detection patterns ────────────────────────────────────────────
-# English patterns + common transliterations/keywords used across languages.
-# Covers: casual switch, professional switch, in English and loose keywords.
-
-_MODE_SWITCH_PATTERNS: list[tuple[str, str]] = [
-    # → casual (English)
-    (r"\b(switch|change|go|put|set)\s+(to\s+)?(casual|chill|relax(ed)?|friendly|informal)\b", "casual"),
-    (r"\bcasual\s*(mode)?\b", "casual"),
-    (r"\brelax\s*(mode)?\b", "casual"),
-    (r"\bchill\s*(mode|out)?\b", "casual"),
-    (r"\bbe\s+(more\s+)?(casual|chill|friendly|relaxed|cool|fun)\b", "casual"),
-    (r"\bstop\s+being\s+(so\s+)?(formal|stiff|professional|serious)\b", "casual"),
-    (r"\bgo\s+(casual|informal|easy|fun)\b", "casual"),
-    (r"\bfriendly\s+mode\b", "casual"),
-    (r"\binformal\s+mode\b", "casual"),
-    # → professional (English)
-    (r"\b(switch|change|go|put|set)\s+(to\s+)?(professional|pro|formal|business|strict|serious)\b", "professional"),
-    (r"\bprofessional\s*(mode)?\b", "professional"),
-    (r"\bbusiness\s*(mode)?\b", "professional"),
-    (r"\bformal\s*(mode)?\b", "professional"),
-    (r"\bbe\s+(more\s+)?(professional|formal|serious|strict)\b", "professional"),
-    (r"\bback\s+to\s+(professional|formal|pro|business|strict)\b", "professional"),
-    (r"\bpro\s+mode\b", "professional"),
-    # Multilingual keywords (transliteration / loan words common across languages)
-    # Hindi/Telugu/South Asian languages
-    (r"\bkasual\b", "casual"),
-    (r"\bprofessional\s+mode\b", "professional"),
-    # Japanese (romaji)
-    (r"\bkajuaru\b", "casual"),
-    (r"\bpurof[ei]ssel?n?aru?\b", "professional"),
-    # Korean (romaji)
-    (r"\bkajeual\b", "casual"),
-    # Chinese (romaji)
-    (r"\bsuíbiàn\b", "casual"),
-    (r"\bzhuānyè\b", "professional"),
-    # Spanish
-    (r"\b(modo\s+)?(informal|relajado|casual)\b", "casual"),
-    (r"\b(modo\s+)?(profesional|formal|serio)\b", "professional"),
-    # French
-    (r"\b(mode\s+)?(décontracté|informel|casual)\b", "casual"),
-    (r"\b(mode\s+)?(professionnel|formel|sérieux)\b", "professional"),
-    # German
-    (r"\b(modus\s+)?(locker|lässig|casual|freundlich)\b", "casual"),
-    (r"\b(modus\s+)?(professionell|formell|ernst)\b", "professional"),
-    # Arabic
-    (r"\bغير\s+رسمي\b", "casual"),
-    (r"\bرسمي\b", "professional"),
-]
+# Loaded from skills/mode_switch.SKILL.md (data-driven — see skills/README.md)
+# instead of a hardcoded Python list. Same exact ordered pattern/target pairs
+# as the original _MODE_SWITCH_PATTERNS, same first-match-wins mechanism.
+# Loaded once at import time (no per-request cost).
+_MODE_SWITCH_PATTERNS: list[tuple[str, str]] = load_mode_switch_skill().mode_patterns
 
 _MODE_CONFIRM: dict[str, str] = {
     "professional": (
@@ -154,6 +114,17 @@ async def chat(request: Request):
     if mode_switched and len(req.message.split()) <= 8:
         confirmation = _MODE_CONFIRM[mode]
         audio_b64 = await synthesize(confirmation, language)
+        # This branch returns before run_agent() ever runs, so it's the one
+        # turn type not covered by run_agent()'s own vault-recording hook —
+        # record it here directly.
+        vault.record_turn(
+            session_id=req.session_id,
+            user_message=req.message,
+            user_language=language,
+            assistant_response=confirmation,
+            mode=mode,
+            intent="mode_switch",
+        )
         return ChatResponse(
             response_text=confirmation,
             audio_base64=audio_b64,

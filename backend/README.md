@@ -258,6 +258,51 @@ The frontend connects to the backend at http://localhost:8000.
 
 ---
 
+## 11. Memory vault (`backend/vault/`)
+
+Ultron keeps a persistent, human-readable memory vault at `backend/vault/`,
+written as real Obsidian-compatible markdown — genuinely nice to open in
+Obsidian, not just a log dump. It's gitignored and **contains real personal
+conversation data** — never commit it, never share it.
+
+```
+backend/vault/
+  raw/       one markdown file per day (raw/2026-08-06.md) — every chat/voice
+             turn, with timestamp, session ID, detected language, active
+             mode, and any tool/intent triggered
+  wiki/      one note per notable entity/topic (wiki/OweWise.md), cross-linked
+             with raw/ notes via real [[wikilinks]]
+  outputs/   reserved for generated content (search summaries, calendar
+             digests, ...) — wired up incrementally, empty today
+```
+
+This is separate from (and durable across restarts, unlike) `core/memory.py`'s
+in-session conversation history — see `core/vault.py` for the implementation.
+Cross-session recall is automatic: when a session is new or has little
+context, Ultron does a cheap, scoped lookup against `wiki/` note titles and
+injects any relevant prior context into the prompt.
+
+To open the vault in Obsidian: `File → Open folder as vault →
+backend/vault/`.
+
+## 12. Skills system (`backend/skills/`)
+
+Every tool-triggering intent (web search, opening apps/files, smart home,
+calendar, tasks, camera/screen analysis, the calculator) plus mode-switch
+detection is defined declaratively in a `*.SKILL.md` file under
+`backend/skills/`, not hardcoded in `core/agent.py`. `core/agent.py` loads
+all of them at startup and builds its classifier from that data — this is
+still plain regex pattern matching under the hood (not "real" LangGraph, see
+`core/agent.py`'s module docstring), just data-driven instead of hardcoded.
+
+**To add a new skill:** create a new `backend/skills/<name>.SKILL.md` file
+with a unique `priority`, trigger patterns, and a `handler` reference to a
+Python function — no changes to `core/agent.py` needed. See
+`backend/skills/README.md` for the full format reference and a
+fully-documented example (`web_search.SKILL.md`).
+
+---
+
 ## API Endpoints
 
 | Method | Path | Description |

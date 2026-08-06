@@ -10,6 +10,9 @@ CRITICAL RULES:
   - Mode is read from the caller (who reads it from app_state / ultron_config.json).
 """
 
+from datetime import datetime
+from typing import Optional
+
 from multilingual.prompt_localizer import get_cultural_tone
 
 # ── Base prompts ──────────────────────────────────────────────────────────────
@@ -102,4 +105,26 @@ def build_system_prompt(
     tone = get_cultural_tone(language_code)
     tone_instruction = f"\n\nTone guidance: {tone}" if tone else ""
 
-    return base + lang_instruction + tone_instruction
+    # Current date/time — real local system clock, injected as a known fact
+    # on every request. Without this, the LLM has no way to know today's
+    # date or the current time at all (its knowledge has a training cutoff
+    # and no live clock), so it correctly — from its own perspective — used
+    # to refuse "what is today's date" / "what time is it" questions. This
+    # fixes the casual case for free; tools/datetime_tool.py + the
+    # "datetime" skill (core/agent.py's _run_datetime_and_narrate) handle
+    # the higher-precision, grounded/verified case (exact date/time
+    # queries, "how many days until X") the same way tools/calculator.py
+    # handles arithmetic instead of leaving it to the LLM to restate loosely.
+    datetime_instruction = (
+        f"\n\nCurrent date and time: {_current_datetime_fact()}. Use this "
+        "for any date/time-related questions — never claim you don't have "
+        "access to the current date or time, you do."
+    )
+
+    return base + lang_instruction + tone_instruction + datetime_instruction
+
+
+def _current_datetime_fact(now: Optional[datetime] = None) -> str:
+    """Real local system clock, formatted naturally and unambiguously."""
+    now = now or datetime.now()
+    return now.strftime("%A, %B %d, %Y, %I:%M %p")

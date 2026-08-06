@@ -38,3 +38,5 @@ sounddevice==0.5.1
 soundfile==0.12.1
 scipy==1.14.1
 langdetect==1.0.9
+# Parses backend/skills/*.SKILL.md YAML frontmatter (skills/loader.py).
+pyyaml==6.0.3
